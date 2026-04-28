@@ -29,7 +29,7 @@ KEY_FORMATS = [
     "30x30", "20x120", "75x25", "25x75", "60x20",
 ]
 MATERIAL_FORMATS = {
-    "Керамика":     ["60x30", "30x30", "25x75", "20x60", "30x60"],
+    "Керамика":     ["90x30", "60x30", "40x25", "30x10"],
     "Керамогранит": ["120x60", "60x60", "60x30", "40x40", "30x30"],
     "Клинкер":      ["40x40", "30x30", "25x5"],
 }
@@ -69,46 +69,67 @@ st.set_page_config(
 @st.cache_data(ttl=3600)
 def load_data() -> pd.DataFrame:
     client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    all_rows = []
-    page = 0
-    page_size = 1000
-    while True:
-        response = (
-            client.table("tiles_v2")
-            .select("*")
-            .range(page * page_size, (page + 1) * page_size - 1)
-            .execute()
-        )
-        rows = response.data
-        if not rows:
-            break
-        all_rows.extend(rows)
-        page += 1
-    df = pd.DataFrame(all_rows)
-    df["price"]             = pd.to_numeric(df["price"], errors="coerce")
-    df["discount"]          = pd.to_numeric(df["discount"], errors="coerce")
-    df["thickness"]         = pd.to_numeric(df["thickness"], errors="coerce")
-    df["total_stock"]       = pd.to_numeric(df["total_stock"], errors="coerce")
-    df["total_stock_units"] = pd.to_numeric(df["total_stock_units"], errors="coerce")
+
+    def fetch_all(table: str) -> list:
+        rows, page = [], 0
+        while True:
+            resp = (
+                client.table(table)
+                .select("*")
+                .range(page * 1000, (page + 1) * 1000 - 1)
+                .execute()
+            )
+            if not resp.data:
+                break
+            rows.extend(resp.data)
+            page += 1
+        return rows
+
+    df_prod   = pd.DataFrame(fetch_all("products"))
+    df_prices = pd.DataFrame(fetch_all("prices"))
+
+    # Мёрж: prices LEFT JOIN products (store денормализован в обоих — берём из prices)
+    df = df_prices.merge(
+        df_prod.drop(columns=["store"], errors="ignore"),
+        on="product_id",
+        how="left",
+    )
+
+    # Парсинг дат и периодов
+    df["date_parsed"]  = pd.to_datetime(df["date"], format="%d.%m.%Y", errors="coerce")
+    df["period_label"] = df["date_parsed"].dt.strftime("%m.%Y")
+
+    for col in ["price", "discount", "thickness", "total_stock", "total_stock_units"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
     # Глобальный фильтр: только цены за м²
     df = df[df["price"].notna() & (df["price_unit"] == "м²")]
     return df
 
 df = load_data()
 
+available_periods = sorted(
+    df["period_label"].dropna().unique(),
+    key=lambda x: pd.to_datetime(x, format="%m.%Y"),
+)
+
 # ─── Заголовок ──────────────────────────────────────────────────────────────
 
 st.title("Рынок керамической плитки Беларуси")
+_cap_period = st.session_state.get(
+    "selected_period", available_periods[-1] if available_periods else ""
+)
+_df_cap = df[df["period_label"] == _cap_period] if _cap_period else df
 st.caption(
-    f"Данные: {df['store'].nunique()} магазина  •  "
-    f"{len(df):,} позиций (цена за м²)  •  "
-    f"Дата обновления: {df['date'].max()}"
+    f"Данные: {_df_cap['store'].nunique()} магазина  •  "
+    f"{len(_df_cap):,} позиций (цена за м²)  •  "
+    f"Период: {_cap_period}"
 )
 
 # ─── Session state и callbacks ───────────────────────────────────────────────
 
 _price_min_default = int(df["price"].min()) if len(df) > 0 else 0
-for _k, _v in [("pr_lo", _price_min_default), ("pr_hi", 400), ("disc_max", 30)]:
+for _k, _v in [("pr_lo", _price_min_default), ("pr_hi", 120), ("disc_max", 30)]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
@@ -161,8 +182,8 @@ def _reset_filters():
     st.session_state["countries_pills"] = [c for c in KEY_COUNTRIES if c in df["country"].dropna().unique()]
     st.session_state["countries_multi"] = sorted(df["country"].dropna().unique())
     st.session_state.pr_lo = _price_min_default
-    st.session_state.pr_hi = 400
-    st.session_state["_price_slider"] = (_price_min_default, 400)
+    st.session_state.pr_hi = 120
+    st.session_state["_price_slider"] = (_price_min_default, 120)
     st.session_state.disc_max = 30
     st.session_state["_disc_slider"] = 30
     st.session_state["only_with_stock"] = False
@@ -172,22 +193,33 @@ def _reset_filters():
 with st.sidebar:
     st.header("Фильтры")
 
+    selected_period = st.selectbox(
+        "Период данных",
+        options=available_periods,
+        index=len(available_periods) - 1,
+        key="selected_period",
+    )
+    st.divider()
+
+    # Данные выбранного периода — для корректных счётчиков в фильтрах
+    _df_period = df[df["period_label"] == selected_period]
+
     st.markdown("**Магазин**")
-    store_counts = df["store"].value_counts()
+    store_counts = _df_period["store"].value_counts()
     stores = [
-        s for s in sorted(df["store"].dropna().unique())
+        s for s in sorted(_df_period["store"].dropna().unique())
         if st.checkbox(f"{s}  ({store_counts.get(s, 0):,})", value=True, key=f"store_{s}")
     ]
 
     st.divider()
-    all_formats_list = sorted(df["format"].dropna().unique())
+    all_formats_list = sorted(_df_period["format"].dropna().unique())
     key_formats_only = st.checkbox("Только ключевые форматы", value=True, key="key_formats_only")
 
     st.markdown("**Материал**")
-    material_counts = df["material"].value_counts()
+    material_counts = _df_period["material"].value_counts()
     materials = []
     sub_format_selections = {}
-    for m in sorted(df["material"].dropna().unique()):
+    for m in sorted(_df_period["material"].dropna().unique()):
         if st.checkbox(f"{m}  ({material_counts.get(m, 0):,})", value=True, key=f"mat_{m}"):
             materials.append(m)
         if key_formats_only and m in MATERIAL_FORMATS:
@@ -200,8 +232,8 @@ with st.sidebar:
                 sub_format_selections[m] = list(sel) if sel else []
 
     st.markdown("**Тип поверхности**")
-    sf_opts = sorted(df["surface_finish"].dropna().replace("", pd.NA).dropna().unique())
-    sf_counts = df["surface_finish"].value_counts()
+    sf_opts = sorted(_df_period["surface_finish"].dropna().replace("", pd.NA).dropna().unique())
+    sf_counts = _df_period["surface_finish"].value_counts()
     surface_finishes = [
         s for s in sf_opts
         if st.checkbox(f"{s}  ({sf_counts.get(s, 0):,})", value=True, key=f"sf_{s}")
@@ -220,13 +252,13 @@ with st.sidebar:
 
     designs = st.multiselect(
         "Дизайн",
-        options=sorted(df["primary_design"].dropna().unique()),
+        options=sorted(_df_period["primary_design"].dropna().unique()),
         placeholder="Все дизайны",
         key="designs",
     )
     colors = st.multiselect(
         "Цвет",
-        options=sorted(df["primary_color"].dropna().replace("", pd.NA).dropna().unique()),
+        options=sorted(_df_period["primary_color"].dropna().replace("", pd.NA).dropna().unique()),
         placeholder="Все цвета",
         key="colors",
     )
@@ -236,7 +268,7 @@ with st.sidebar:
         "", ["Ключевые страны", "Все страны"],
         horizontal=True, key="country_mode", label_visibility="collapsed",
     )
-    all_countries_list = sorted(df["country"].dropna().unique())
+    all_countries_list = sorted(_df_period["country"].dropna().unique())
     if country_mode == "Ключевые страны":
         country_opts = [c for c in KEY_COUNTRIES if c in all_countries_list]
         countries = st.pills(
@@ -250,7 +282,7 @@ with st.sidebar:
         )
 
     st.markdown("**Цена, р./м²**")
-    price_max_slider = max(500, int(df["price"].max()) + 10) if len(df) > 0 else 500
+    price_max_slider = max(500, int(_df_period["price"].max()) + 10) if len(_df_period) > 0 else 500
     st.slider(
         "", 0, price_max_slider,
         (st.session_state.pr_lo, st.session_state.pr_hi),
@@ -299,40 +331,43 @@ with st.sidebar:
     st.caption("КЕРАМИН выделен красным на всех графиках")
 
 # ─── Применение фильтров ────────────────────────────────────────────────────
+# df_sidebar — все периоды, только фильтры сайдбара (используется в табе «Динамика»)
+# filtered   — df_sidebar + выбранный период (используется в табах 1–5)
 
-filtered = df.copy()
+df_sidebar = df.copy()
 
 if stores:
-    filtered = filtered[filtered["store"].isin(stores)]
+    df_sidebar = df_sidebar[df_sidebar["store"].isin(stores)]
 
 _any_sub = any(len(v) > 0 for v in sub_format_selections.values())
 if _any_sub:
-    cross = pd.Series(False, index=filtered.index)
+    cross = pd.Series(False, index=df_sidebar.index)
     for mat, fmts in sub_format_selections.items():
         if fmts and mat in materials:
-            cross |= (filtered["material"] == mat) & (filtered["format"].isin(fmts))
-    filtered = filtered[cross]
+            cross |= (df_sidebar["material"] == mat) & (df_sidebar["format"].isin(fmts))
+    df_sidebar = df_sidebar[cross]
 else:
     if materials:
-        filtered = filtered[filtered["material"].isin(materials)]
+        df_sidebar = df_sidebar[df_sidebar["material"].isin(materials)]
     if formats:
-        filtered = filtered[filtered["format"].isin(formats)]
+        df_sidebar = df_sidebar[df_sidebar["format"].isin(formats)]
 
 if surface_finishes:
-    filtered = filtered[filtered["surface_finish"].isin(surface_finishes)]
+    df_sidebar = df_sidebar[df_sidebar["surface_finish"].isin(surface_finishes)]
 if designs:
-    filtered = filtered[filtered["primary_design"].isin(designs)]
+    df_sidebar = df_sidebar[df_sidebar["primary_design"].isin(designs)]
 if colors:
-    filtered = filtered[filtered["primary_color"].isin(colors)]
+    df_sidebar = df_sidebar[df_sidebar["primary_color"].isin(colors)]
 if countries:
-    filtered = filtered[filtered["country"].isin(countries)]
+    df_sidebar = df_sidebar[df_sidebar["country"].isin(countries)]
 
-filtered = filtered[filtered["price"].between(price_range[0], price_range[1])]
-filtered = filtered[filtered["discount"].isna() | (filtered["discount"] <= max_discount)]
+df_sidebar = df_sidebar[df_sidebar["price"].between(price_range[0], price_range[1])]
+df_sidebar = df_sidebar[df_sidebar["discount"].isna() | (df_sidebar["discount"] <= max_discount)]
 
 if only_with_stock and STORES_WITH_STOCK:
-    filtered = filtered[filtered["total_stock"].notna() & (filtered["total_stock"] > 0)]
+    df_sidebar = df_sidebar[df_sidebar["total_stock"].notna() & (df_sidebar["total_stock"] > 0)]
 
+filtered   = df_sidebar[df_sidebar["period_label"] == selected_period].copy()
 df_keramin = filtered[filtered["brand"] == KERAMIN_BRAND]
 df_market  = filtered[filtered["brand"] != KERAMIN_BRAND]
 
@@ -390,12 +425,13 @@ def build_threat_bubbles(df_mkt: pd.DataFrame, df_ker: pd.DataFrame) -> pd.DataF
 
 # ─── ТАБЫ ────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "Ценовой ландшафт",
     "Угрозы КЕРАМИН",
     "Позиция по форматам",
     "Поиск аналогов",
     "Данные",
+    "Динамика",
 ])
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1031,3 +1067,456 @@ with tab5:
     st.dataframe(all_data_out, use_container_width=True, column_config=col_cfg, height=600)
     st.caption(f"Показано {len(filtered):,} из {len(df):,} записей")
     download_button(all_data_out, "tiles_belarus.xlsx", "Скачать Excel")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ТАБ 6 — ДИНАМИКА
+# ════════════════════════════════════════════════════════════════════════════
+
+with tab6:
+    st.subheader("Динамика рынка")
+
+    if len(available_periods) < 2:
+        st.warning("Для анализа динамики нужно минимум два периода данных")
+    else:
+        # ── БЛОК 1: Сравнение двух периодов ──────────────────────────────────
+        st.markdown("### Блок 1 — Сравнение двух периодов")
+
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            period_base = st.selectbox(
+                "Базовый период",
+                options=available_periods,
+                index=max(0, len(available_periods) - 2),
+                key="dyn_period_base",
+            )
+        with col_p2:
+            period_new = st.selectbox(
+                "Новый период",
+                options=available_periods,
+                index=len(available_periods) - 1,
+                key="dyn_period_new",
+            )
+
+        if period_base == period_new:
+            st.warning("Выберите два разных периода для сравнения")
+        else:
+            df_base = df_sidebar[df_sidebar["period_label"] == period_base]
+            df_new  = df_sidebar[df_sidebar["period_label"] == period_new]
+
+            # ── Подблок А: Новые и исчезнувшие продукты ──────────────────────
+            st.markdown("#### А — Новые и исчезнувшие товары")
+
+            ids_base = set(df_base["product_id"].dropna())
+            ids_new  = set(df_new["product_id"].dropna())
+            new_ids  = ids_new - ids_base
+            gone_ids = ids_base - ids_new
+
+            mc1, mc2 = st.columns(2)
+            mc1.metric("Новых товаров", len(new_ids))
+            mc2.metric("Исчезнувших товаров", len(gone_ids))
+
+            PROD_COLS = ["name", "brand", "brand_country", "format", "material", "price", "store", "url"]
+
+            df_new_prods  = df_new[df_new["product_id"].isin(new_ids)]
+            df_gone_prods = df_base[df_base["product_id"].isin(gone_ids)]
+
+            def _show_prod_table(df_t: pd.DataFrame, title: str, fname: str):
+                cols = [c for c in PROD_COLS if c in df_t.columns]
+                deduped = df_t.drop_duplicates("product_id") if "product_id" in df_t.columns else df_t
+                out = deduped[cols].reset_index(drop=True)
+                cfg = {
+                    "price": st.column_config.NumberColumn("Цена", format="%.0f р."),
+                }
+                if "url" in out.columns:
+                    cfg["url"] = st.column_config.LinkColumn("Ссылка")
+                    out["url"] = out["url"].fillna("").astype(str)
+                st.markdown(f"**{title}** ({len(out):,} поз.)")
+                st.dataframe(out, use_container_width=True, column_config=cfg, height=300)
+                download_button(out, fname)
+
+            t_new, t_gone = st.tabs([f"Новые ({len(new_ids):,})", f"Исчезнувшие ({len(gone_ids):,})"])
+            with t_new:
+                if df_new_prods.empty:
+                    st.info("Нет новых товаров")
+                else:
+                    _show_prod_table(df_new_prods, f"Новые товары в {period_new}", f"new_products_{period_new}.xlsx")
+            with t_gone:
+                if df_gone_prods.empty:
+                    st.info("Нет исчезнувших товаров")
+                else:
+                    _show_prod_table(df_gone_prods, f"Исчезнувшие товары из {period_base}", f"gone_products_{period_base}.xlsx")
+
+            # ── Подблок Б: Изменение цен ──────────────────────────────────────
+            st.markdown("#### Б — Изменение цен")
+
+            price_b = df_base.groupby("product_id")["price"].mean().rename("price_base")
+            price_n = df_new.groupby("product_id")["price"].mean().rename("price_new")
+            df_chg  = price_b.to_frame().join(price_n, how="inner")
+            df_chg["delta"]     = df_chg["price_new"] - df_chg["price_base"]
+            df_chg["delta_pct"] = (df_chg["price_new"] / df_chg["price_base"] - 1) * 100
+
+            _attrs = (
+                df_sidebar[["product_id", "format", "material", "brand", "brand_country", "name"]]
+                .drop_duplicates("product_id")
+                .set_index("product_id")
+            )
+            df_chg = df_chg.join(_attrs)
+
+            price_view = st.pills(
+                "Разрез",
+                options=["По форматам", "По типам материала", "По производителям"],
+                default="По форматам",
+                key="dyn_price_view",
+            )
+
+            def _price_change_charts(group_col: str, top_n: int = None):
+                agg = (
+                    df_chg.groupby(group_col)
+                    .agg(
+                        sku=("delta", "count"),
+                        price_base=("price_base", "mean"),
+                        price_new=("price_new", "mean"),
+                        delta=("delta", "mean"),
+                        delta_pct=("delta_pct", "mean"),
+                    )
+                    .reset_index()
+                )
+                if top_n:
+                    agg = agg.nlargest(top_n, "sku")
+                agg = agg.sort_values("delta_pct")
+
+                # Цвет баров: зелёный — снижение, красный — рост
+                def _bar_color(row):
+                    if row["brand"] == KERAMIN_BRAND if "brand" in agg.columns else False:
+                        return COLOR_KERAMIN
+                    return "#2D6A4F" if row["delta_pct"] <= 0 else "#E63946"
+
+                colors_bar = []
+                for _, row in agg.iterrows():
+                    is_keramin = (group_col == "brand_country" and KERAMIN_BRAND in str(row[group_col]))
+                    if is_keramin:
+                        colors_bar.append(COLOR_KERAMIN)
+                    elif row["delta_pct"] <= 0:
+                        colors_bar.append("#2D6A4F")
+                    else:
+                        colors_bar.append("#E63946")
+
+                fig_bar = go.Figure(go.Bar(
+                    x=agg[group_col],
+                    y=agg["delta_pct"].round(1),
+                    marker_color=colors_bar,
+                    text=agg["delta_pct"].round(1).astype(str) + "%",
+                    textposition="outside",
+                ))
+                fig_bar.update_layout(
+                    xaxis_title=None, yaxis_title="Изменение цены, %",
+                    height=400, margin=dict(t=20, b=20),
+                    yaxis=dict(zeroline=True, zerolinewidth=2, zerolinecolor="gray"),
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+                tbl = agg.rename(columns={
+                    group_col:    "Группа",
+                    "sku":        "SKU",
+                    "price_base": f"Цена {period_base} (р.)",
+                    "price_new":  f"Цена {period_new} (р.)",
+                    "delta":      "Δ руб.",
+                    "delta_pct":  "Δ %",
+                })
+                tbl[f"Цена {period_base} (р.)"] = tbl[f"Цена {period_base} (р.)"].round(1)
+                tbl[f"Цена {period_new} (р.)"]  = tbl[f"Цена {period_new} (р.)"].round(1)
+                tbl["Δ руб."] = tbl["Δ руб."].round(1)
+                tbl["Δ %"]    = tbl["Δ %"].round(1)
+                st.dataframe(tbl, use_container_width=True, hide_index=True)
+                download_button(
+                    df_chg[[group_col, "name", "brand", "brand_country", "format",
+                             "material", "price_base", "price_new", "delta", "delta_pct"]]
+                    .rename(columns={"price_base": f"Цена {period_base}", "price_new": f"Цена {period_new}",
+                                     "delta": "Δ руб.", "delta_pct": "Δ %"}),
+                    f"price_change_{group_col}.xlsx",
+                )
+
+            if price_view == "По форматам":
+                fmt_counts = df_chg.groupby("format")["delta"].count()
+                valid_fmts = fmt_counts[fmt_counts >= 5].index
+                df_chg_fmt = df_chg[df_chg["format"].isin(valid_fmts)]
+                if df_chg_fmt.empty:
+                    st.info("Недостаточно данных по форматам (нужно ≥5 продуктов)")
+                else:
+                    _price_change_charts.__wrapped__ = False
+                    _agg = (
+                        df_chg_fmt.groupby("format")
+                        .agg(sku=("delta","count"), price_base=("price_base","mean"),
+                             price_new=("price_new","mean"), delta=("delta","mean"), delta_pct=("delta_pct","mean"))
+                        .reset_index().sort_values("delta_pct")
+                    )
+                    colors_bar = ["#2D6A4F" if v <= 0 else "#E63946" for v in _agg["delta_pct"]]
+                    fig = go.Figure(go.Bar(x=_agg["format"], y=_agg["delta_pct"].round(1),
+                        marker_color=colors_bar,
+                        text=_agg["delta_pct"].round(1).astype(str)+"%", textposition="outside"))
+                    fig.update_layout(xaxis_title=None, yaxis_title="Изменение цены, %", height=400,
+                        margin=dict(t=20,b=20), yaxis=dict(zeroline=True,zerolinewidth=2,zerolinecolor="gray"))
+                    st.plotly_chart(fig, use_container_width=True)
+                    tbl = _agg.rename(columns={"format":"Формат","sku":"SKU","price_base":f"Цена {period_base} (р.)",
+                        "price_new":f"Цена {period_new} (р.)","delta":"Δ руб.","delta_pct":"Δ %"})
+                    for c in [f"Цена {period_base} (р.)",f"Цена {period_new} (р.)","Δ руб.","Δ %"]:
+                        tbl[c] = tbl[c].round(1)
+                    st.dataframe(tbl, use_container_width=True, hide_index=True)
+                    download_button(df_chg_fmt[["format","name","brand","brand_country","material",
+                        "price_base","price_new","delta","delta_pct"]].rename(columns={
+                        "price_base":f"Цена {period_base}","price_new":f"Цена {period_new}",
+                        "delta":"Δ руб.","delta_pct":"Δ %"}), "price_change_format.xlsx")
+
+            elif price_view == "По типам материала":
+                _agg = (
+                    df_chg.groupby("material")
+                    .agg(sku=("delta","count"), price_base=("price_base","mean"),
+                         price_new=("price_new","mean"), delta=("delta","mean"), delta_pct=("delta_pct","mean"))
+                    .reset_index().sort_values("delta_pct")
+                )
+                colors_bar = ["#2D6A4F" if v <= 0 else "#E63946" for v in _agg["delta_pct"]]
+                fig = go.Figure(go.Bar(x=_agg["material"], y=_agg["delta_pct"].round(1),
+                    marker_color=colors_bar,
+                    text=_agg["delta_pct"].round(1).astype(str)+"%", textposition="outside"))
+                fig.update_layout(xaxis_title=None, yaxis_title="Изменение цены, %", height=350,
+                    margin=dict(t=20,b=20), yaxis=dict(zeroline=True,zerolinewidth=2,zerolinecolor="gray"))
+                st.plotly_chart(fig, use_container_width=True)
+                tbl = _agg.rename(columns={"material":"Материал","sku":"SKU","price_base":f"Цена {period_base} (р.)",
+                    "price_new":f"Цена {period_new} (р.)","delta":"Δ руб.","delta_pct":"Δ %"})
+                for c in [f"Цена {period_base} (р.)",f"Цена {period_new} (р.)","Δ руб.","Δ %"]:
+                    tbl[c] = tbl[c].round(1)
+                st.dataframe(tbl, use_container_width=True, hide_index=True)
+                download_button(df_chg[["material","name","brand","brand_country","format",
+                    "price_base","price_new","delta","delta_pct"]].rename(columns={
+                    "price_base":f"Цена {period_base}","price_new":f"Цена {period_new}",
+                    "delta":"Δ руб.","delta_pct":"Δ %"}), "price_change_material.xlsx")
+
+            else:  # По производителям
+                _agg = (
+                    df_chg.groupby("brand_country")
+                    .agg(sku=("delta","count"), price_base=("price_base","mean"),
+                         price_new=("price_new","mean"), delta=("delta","mean"), delta_pct=("delta_pct","mean"))
+                    .reset_index()
+                )
+                _agg = _agg.nlargest(20, "sku").sort_values("delta_pct")
+                colors_bar = [COLOR_KERAMIN if KERAMIN_BRAND in str(r) else
+                              ("#2D6A4F" if v <= 0 else "#E63946")
+                              for r, v in zip(_agg["brand_country"], _agg["delta_pct"])]
+                fig = go.Figure(go.Bar(x=_agg["brand_country"], y=_agg["delta_pct"].round(1),
+                    marker_color=colors_bar,
+                    text=_agg["delta_pct"].round(1).astype(str)+"%", textposition="outside"))
+                fig.update_layout(xaxis_title=None, yaxis_title="Изменение цены, %", height=450,
+                    margin=dict(t=20,b=20), yaxis=dict(zeroline=True,zerolinewidth=2,zerolinecolor="gray"))
+                st.plotly_chart(fig, use_container_width=True)
+                tbl = _agg.rename(columns={"brand_country":"Производитель","sku":"SKU",
+                    "price_base":f"Цена {period_base} (р.)","price_new":f"Цена {period_new} (р.)",
+                    "delta":"Δ руб.","delta_pct":"Δ %"})
+                for c in [f"Цена {period_base} (р.)",f"Цена {period_new} (р.)","Δ руб.","Δ %"]:
+                    tbl[c] = tbl[c].round(1)
+                st.dataframe(tbl, use_container_width=True, hide_index=True)
+                download_button(df_chg[["brand_country","name","brand","format","material",
+                    "price_base","price_new","delta","delta_pct"]].rename(columns={
+                    "price_base":f"Цена {period_base}","price_new":f"Цена {period_new}",
+                    "delta":"Δ руб.","delta_pct":"Δ %"}), "price_change_brand.xlsx")
+
+        st.divider()
+
+        # ── БЛОК 2: Динамика за все периоды ──────────────────────────────────
+        st.markdown("### Блок 2 — Динамика за все периоды")
+
+        if len(available_periods) > 2:
+            n_periods = st.slider(
+                "Количество последних периодов для анализа",
+                min_value=2, max_value=len(available_periods),
+                value=min(len(available_periods), 6),
+                key="dyn_n_periods",
+                help="Периоды могут быть нерегулярными (например, квартальными)",
+            )
+        else:
+            n_periods = 2
+        selected_periods = available_periods[-n_periods:]
+        df_trend = df_sidebar[df_sidebar["period_label"].isin(selected_periods)].copy()
+
+        # ── Подблок А: Динамика числа продуктов ──────────────────────────────
+        st.markdown("#### А — Динамика числа товаров и SKU")
+
+        total_skus = (
+            df_trend.groupby("period_label")["product_id"]
+            .nunique()
+            .reset_index()
+            .rename(columns={"product_id": "total_sku"})
+        )
+        total_skus["period_label"] = pd.Categorical(
+            total_skus["period_label"], categories=selected_periods, ordered=True
+        )
+        total_skus = total_skus.sort_values("period_label")
+
+        first_seen = (
+            df_sidebar.groupby("product_id")["date_parsed"]
+            .min()
+            .dt.strftime("%m.%Y")
+            .rename("first_period")
+            .reset_index()
+        )
+        new_by_period = (
+            first_seen.groupby("first_period")["product_id"]
+            .count()
+            .reset_index()
+            .rename(columns={"product_id": "new_products"})
+        )
+        new_by_period = new_by_period[new_by_period["first_period"].isin(selected_periods)]
+        new_by_period["period_label"] = pd.Categorical(
+            new_by_period["first_period"], categories=selected_periods, ordered=True
+        )
+        new_by_period = new_by_period.sort_values("period_label")
+        new_by_period["cumulative_new"] = new_by_period["new_products"].cumsum()
+
+        trend_merged = total_skus.merge(
+            new_by_period[["first_period", "cumulative_new"]],
+            left_on="period_label", right_on="first_period", how="left"
+        )
+        fig_sku = go.Figure()
+        fig_sku.add_trace(go.Scatter(
+            x=trend_merged["period_label"].astype(str), y=trend_merged["total_sku"],
+            mode="lines+markers+text", name="Всего SKU",
+            text=trend_merged["total_sku"], textposition="top center",
+            line=dict(color=COLOR_MARKET, width=2),
+        ))
+        fig_sku.add_trace(go.Scatter(
+            x=trend_merged["period_label"].astype(str), y=trend_merged["cumulative_new"],
+            mode="lines+markers+text", name="Накопленно новых",
+            text=trend_merged["cumulative_new"], textposition="bottom center",
+            line=dict(color="#F4A261", width=2, dash="dot"),
+        ))
+        fig_sku.update_layout(
+            xaxis_title="Период", yaxis_title="Количество товаров",
+            height=350, legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            margin=dict(t=40, b=20),
+        )
+        st.plotly_chart(fig_sku, use_container_width=True)
+
+        # ── Подблок Б: Динамика средних цен ──────────────────────────────────
+        st.markdown("#### Б — Динамика средних цен")
+
+        trend_view = st.pills(
+            "Разрез",
+            options=["По форматам", "По типам материала", "По производителям"],
+            default="По форматам",
+            key="dyn_trend_view",
+        )
+
+        def _trend_line_chart(group_col: str, groups: list, highlight: str = None):
+            agg = (
+                df_trend.groupby(["period_label", group_col])["price"]
+                .mean()
+                .reset_index()
+            )
+            agg = agg[agg[group_col].isin(groups)]
+            agg["period_label"] = pd.Categorical(
+                agg["period_label"], categories=selected_periods, ordered=True
+            )
+            agg = agg.sort_values("period_label")
+
+            fig = go.Figure()
+            for grp in groups:
+                sub = agg[agg[group_col] == grp]
+                if sub.empty:
+                    continue
+                is_keramin = highlight and KERAMIN_BRAND in str(grp)
+                fig.add_trace(go.Scatter(
+                    x=sub["period_label"].astype(str), y=sub["price"].round(1),
+                    mode="lines+markers",
+                    name=str(grp),
+                    line=dict(
+                        color=COLOR_KERAMIN if is_keramin else None,
+                        width=3 if is_keramin else 1.5,
+                    ),
+                    hovertemplate=f"{grp}<br>Период: %{{x}}<br>Средняя цена: %{{y:.1f}} р.<extra></extra>",
+                ))
+            fig.update_layout(
+                xaxis_title="Период", yaxis_title="Средняя цена, р.",
+                height=420, legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                        font=dict(size=10)),
+                margin=dict(t=50, b=20),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        last_period = selected_periods[-1]
+        if trend_view == "По форматам":
+            _trend_line_chart("format", KEY_FORMATS)
+        elif trend_view == "По типам материала":
+            all_mats = sorted(df_trend["material"].dropna().unique())
+            _trend_line_chart("material", all_mats)
+        else:
+            top10_bc = (
+                df_trend[df_trend["period_label"] == last_period]
+                .groupby("brand_country")["product_id"].nunique()
+                .nlargest(10).index.tolist()
+            )
+            if KERAMIN_BRAND not in " ".join(top10_bc):
+                keramin_bc = df_trend[df_trend["brand"] == KERAMIN_BRAND]["brand_country"].dropna().unique()
+                top10_bc = list(keramin_bc) + [b for b in top10_bc if KERAMIN_BRAND not in str(b)]
+            _trend_line_chart("brand_country", top10_bc, highlight=KERAMIN_BRAND)
+
+        # ── Подблок В: Тепловая карта изменений цен ──────────────────────────
+        st.markdown("#### В — Тепловая карта изменений цен, %")
+
+        heatmap_view = st.pills(
+            "Разрез",
+            options=["По форматам", "По производителям"],
+            default="По форматам",
+            key="dyn_heatmap_view",
+        )
+
+        def _heatmap(group_col: str, groups: list):
+            agg = (
+                df_trend.groupby(["period_label", group_col])["price"]
+                .mean()
+                .reset_index()
+            )
+            agg = agg[agg[group_col].isin(groups)]
+            pivot = agg.pivot(index=group_col, columns="period_label", values="price")
+            # Хронологическая сортировка колонок
+            pivot = pivot[sorted(pivot.columns, key=lambda x: pd.to_datetime(x, format="%m.%Y"))]
+            # % изменения к предыдущему периоду
+            pivot_pct = pivot.pct_change(axis=1) * 100
+            pivot_pct_rounded = pivot_pct.round(1)
+
+            # Заменяем NaN на None для отображения серым
+            z      = pivot_pct_rounded.values.tolist()
+            text_z = [
+                [f"{v:.1f}%" if pd.notna(v) else "" for v in row]
+                for row in pivot_pct_rounded.values
+            ]
+
+            fig = go.Figure(go.Heatmap(
+                z=z,
+                x=list(pivot_pct_rounded.columns),
+                y=list(pivot_pct_rounded.index),
+                text=text_z,
+                texttemplate="%{text}",
+                colorscale=[
+                    [0.0, "#2D6A4F"],   # зелёный — снижение
+                    [0.5, "#FFFFFF"],   # белый — без изменений
+                    [1.0, "#E63946"],   # красный — рост
+                ],
+                zmid=0,
+                colorbar=dict(title="Δ %"),
+            ))
+            fig.update_layout(
+                xaxis_title="Период", yaxis_title=None,
+                height=max(300, len(groups) * 30 + 100),
+                margin=dict(t=20, b=20),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        if heatmap_view == "По форматам":
+            _heatmap("format", KEY_FORMATS)
+        else:
+            top20_bc = (
+                df_trend[df_trend["period_label"] == last_period]
+                .groupby("brand_country")["product_id"].nunique()
+                .nlargest(20).index.tolist()
+            )
+            _heatmap("brand_country", top20_bc)

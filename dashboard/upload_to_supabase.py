@@ -15,6 +15,7 @@
 import json
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client
@@ -33,6 +34,9 @@ PRICES_TABLE   = "prices"
 BATCH_SIZE     = 100
 MAX_RETRIES    = 3
 
+# Текущий месяц в формате "MM.YYYY" — совпадает с форматом дат в данных
+CUR_MONTH = datetime.now().strftime("%m.%Y")
+# CUR_MONTH = "04.2026"
 
 def clean_record(record: dict) -> dict:
     """Заменяет пустые строки на null для корректной записи в Supabase."""
@@ -54,8 +58,12 @@ def upsert_batch(client, table: str, batch: list, attempt: int = 1):
             raise
 
 
-def upload_table(client, table_name: str, data_path: Path):
-    """Загружает все записи из JSON-файла в таблицу Supabase через upsert."""
+def upload_table(client, table_name: str, data_path: Path, month: str = None):
+    """Загружает записи из JSON-файла в таблицу Supabase через upsert.
+
+    month — фильтр вида "MM.YYYY": загружаются только записи этого месяца.
+            Если None — загружаются все записи.
+    """
     if not data_path.exists():
         print(f"[!] Файл не найден: {data_path} — пропускаю")
         return
@@ -63,6 +71,12 @@ def upload_table(client, table_name: str, data_path: Path):
     print(f"\n[*] Загрузка: {data_path.name} -> таблица '{table_name}'")
     with open(data_path, encoding="utf-8") as f:
         data = json.load(f)
+
+    if month:
+        date_field = "date" if table_name == PRICES_TABLE else "date_added"
+        before = len(data)
+        data = [r for r in data if month in (r.get(date_field) or '')]
+        print(f"[*] Фильтр месяца {month}: {before:,} -> {len(data):,} записей")
 
     # Дедупликация по первичному ключу (price_id / product_id) внутри файла
     pk = "price_id" if table_name == PRICES_TABLE else "product_id"
@@ -95,9 +109,10 @@ def upload():
     print("[*] Подключение к Supabase...")
     client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+    print(f"[*] Загружаем только данные за месяц: {CUR_MONTH}")
     # products загружаем первыми (prices имеет FK на products)
-    upload_table(client, PRODUCTS_TABLE, PRODUCTS_PATH)
-    upload_table(client, PRICES_TABLE, PRICES_PATH)
+    upload_table(client, PRODUCTS_TABLE, PRODUCTS_PATH, month=CUR_MONTH)
+    upload_table(client, PRICES_TABLE, PRICES_PATH, month=CUR_MONTH)
 
     print("\n[OK] ЗАГРУЗКА ЗАВЕРШЕНА УСПЕШНО!")
 

@@ -1,5 +1,6 @@
 import json
 import re
+import hashlib
 from datetime import datetime
 import time
 from pathlib import Path
@@ -181,6 +182,15 @@ def create_data_card(line: Dict, store: str) -> Dict:
 
 # ============= ФУНКЦИИ ЗАГРУЗКИ ДАННЫХ =============
 
+def dedup_by_url(data: list, url_key: str = 'Ссылка') -> list:
+    """Оставляет последнее вхождение каждого URL (актуальные данные при повторных запусках)."""
+    seen = {}
+    for item in data:
+        url = item.get(url_key, '')
+        if url:
+            seen[url] = item
+    return list(seen.values())
+
 def get_data_Altagamma():
     """Загрузка и обработка данных Altagamma (altagamma.by)"""
     file_path = BASE_DIR / 'Altagamma' / f'data_{cur_data_file}_altagamma.json'
@@ -192,7 +202,8 @@ def get_data_Altagamma():
     with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    print(f"[+] Altagamma: Загружено {len(data)} записей")
+    data = dedup_by_url(data)
+    print(f"[+] Altagamma: Загружено {len(data)} уникальных записей")
     processed = 0
 
     for line in data:
@@ -275,7 +286,8 @@ def get_data_21vek():
     with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    print(f"[+] 21vek: Загружено {len(data)} записей")
+    data = dedup_by_url(data)
+    print(f"[+] 21vek: Загружено {len(data)} уникальных записей")
     processed = 0
 
     for line in data:
@@ -390,7 +402,8 @@ def get_data_Modus():
     with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    print(f"[+] Modus: Загружено {len(data)} записей")
+    data = dedup_by_url(data)
+    print(f"[+] Modus: Загружено {len(data)} уникальных записей")
     processed = 0
 
     for line in data:
@@ -484,56 +497,130 @@ def get_data_Modus():
 
 # ============= ФУНКЦИИ РАБОТЫ С ФАЙЛАМИ =============
 
-def append_data():
-    """Добавление данных в финальный файл"""
-    output_file = MERGED_DIR / 'data_finally.json'
+def make_product_id(url: str) -> str:
+    return hashlib.md5(url.encode('utf-8')).hexdigest()[:16]
 
-    if not output_file.exists():
-        print(f"\n[*] Создаю новый файл: data_finally.json")
-        existing_data = []
-    else:
+
+def save_to_two_tables():
+    """Записывает данные напрямую в products.json и prices.json.
+
+    products.json — уникальные карточки товаров (идентифицируются по URL).
+    prices.json   — полная история цен (price_id = product_id + дата).
+    Повторный запуск безопасен: добавляются только новые записи.
+    """
+    products_file = MERGED_DIR / 'products.json'
+    prices_file = MERGED_DIR / 'prices.json'
+
+    # Загружаем существующие данные
+    existing_products = []
+    seen_ids = set()
+    if products_file.exists():
         try:
-            with open(output_file, 'r', encoding='utf-8') as file:
-                existing_data = json.load(file)
+            with open(products_file, 'r', encoding='utf-8') as f:
+                existing_products = json.load(f)
+            seen_ids = {p['product_id'] for p in existing_products}
         except json.JSONDecodeError:
-            print(f"[!] Файл data_finally.json поврежден. Создаю новый...")
-            existing_data = []
+            print("[!] products.json поврежден. Создаю новый...")
 
-    existing_data.extend(total_base)
+    existing_prices = []
+    seen_price_ids = set()
+    if prices_file.exists():
+        try:
+            with open(prices_file, 'r', encoding='utf-8') as f:
+                existing_prices = json.load(f)
+            seen_price_ids = {p['price_id'] for p in existing_prices}
+        except json.JSONDecodeError:
+            print("[!] prices.json поврежден. Создаю новый...")
 
-    with open(output_file, 'w', encoding='utf-8') as file:
-        json.dump(existing_data, file, ensure_ascii=False, indent=4)
+    # Убираем полные дубликаты из сырых данных текущего запуска
+    seen_raw = set()
+    deduped_base = []
+    for r in total_base:
+        key = tuple(sorted((k, str(v)) for k, v in r.items()))
+        if key not in seen_raw:
+            seen_raw.add(key)
+            deduped_base.append(r)
+    skipped_raw = len(total_base) - len(deduped_base)
+    if skipped_raw:
+        print(f"[*] Пропущено {skipped_raw} полных дубликатов в сырых данных")
 
-    print(f"\n[OK] Добавлено {len(total_base)} объектов. Всего в файле: {len(existing_data)} объектов")
+    new_products = 0
+    new_prices = 0
+    skipped_no_url = 0
+    skipped_dup_price = 0
 
+    for record in deduped_base:
+        url = record.get('url', '')
+        if not url:
+            skipped_no_url += 1
+            continue
 
-def remove_full_duplicates(filename='data_finally.json'):
-    """Удаление полных дубликатов"""
-    file_path = MERGED_DIR / filename
+        pid = make_product_id(url)
+        date = record.get('date', '')
+        time_val = record.get('time', '')
+        price_id = f"{pid}_{date}_{time_val}"
 
-    try:
-        with open(file_path, 'r', encoding='utf-8') as file:
-            data = json.load(file)
+        if pid not in seen_ids:
+            existing_products.append({
+                'product_id':      pid,
+                'date_added':      date,
+                'url':             url,
+                'store':           record.get('store', ''),
+                'name':            record.get('name', ''),
+                'color':           record.get('color', ''),
+                'primary_color':   record.get('primary_color', ''),
+                'collection':      record.get('collection', ''),
+                'brand':           record.get('brand', ''),
+                'country':         record.get('country', ''),
+                'brand_country':   record.get('brand_country', ''),
+                'thickness':       record.get('thickness'),
+                'original_format': record.get('original_format', ''),
+                'format':          record.get('format'),
+                'design':          record.get('design', ''),
+                'primary_design':  record.get('primary_design', ''),
+                'material':        record.get('material', ''),
+                'surface_type':    record.get('surface_type', ''),
+                'surface_finish':  record.get('surface_finish', ''),
+                'structure':       record.get('structure', ''),
+                'patterns_count':  record.get('patterns_count', ''),
+                'package_size':    record.get('package_size'),
+                'price_unit':      record.get('price_unit', ''),
+            })
+            seen_ids.add(pid)
+            new_products += 1
 
-        unique_data = []
-        seen = set()
+        if price_id not in seen_price_ids:
+            existing_prices.append({
+                'price_id':          price_id,
+                'product_id':        pid,
+                'store':             record.get('store', ''),
+                'date':              date,
+                'time':              record.get('time', ''),
+                'price':             record.get('price'),
+                'price_range':       record.get('price_range'),
+                'discount':          record.get('discount'),
+                'discount_range':    record.get('discount_range'),
+                'availability':      record.get('availability', ''),
+                'total_stock':       record.get('total_stock'),
+                'total_stock_units': record.get('total_stock_units'),
+            })
+            seen_price_ids.add(price_id)
+            new_prices += 1
+        else:
+            skipped_dup_price += 1
 
-        for item in data:
-            item_tuple = tuple(sorted(item.items()))
-            if item_tuple not in seen:
-                seen.add(item_tuple)
-                unique_data.append(item)
+    with open(products_file, 'w', encoding='utf-8') as f:
+        json.dump(existing_products, f, ensure_ascii=False, indent=4)
 
-        with open(file_path, 'w', encoding='utf-8') as file:
-            json.dump(unique_data, file, ensure_ascii=False, indent=4)
+    with open(prices_file, 'w', encoding='utf-8') as f:
+        json.dump(existing_prices, f, ensure_ascii=False, indent=4)
 
-        removed = len(data) - len(unique_data)
-        print(f"[-] Удалено {removed} полных дубликатов. Осталось {len(unique_data)} записей.")
-
-    except FileNotFoundError:
-        print(f"[!] Файл {filename} не найден.")
-    except json.JSONDecodeError:
-        print(f"[!] Ошибка чтения файла {filename}")
+    print(f"\n[OK] products.json: +{new_products} новых товаров (всего {len(existing_products)})")
+    print(f"[OK] prices.json:   +{new_prices} новых записей цен (всего {len(existing_prices)})")
+    if skipped_no_url:
+        print(f"[!] Пропущено {skipped_no_url} записей без URL")
+    if skipped_dup_price:
+        print(f"[*] Пропущено {skipped_dup_price} дублирующихся записей цен")
 
 
 # ============= ГЛАВНАЯ ФУНКЦИЯ =============
@@ -553,8 +640,7 @@ def main():
     print(f"ИТОГО обработано: {len(total_base)} записей")
     print("=" * 60)
 
-    append_data()
-    remove_full_duplicates()
+    save_to_two_tables()
 
     print("\n[OK] ОБРАБОТКА ЗАВЕРШЕНА УСПЕШНО!")
 
