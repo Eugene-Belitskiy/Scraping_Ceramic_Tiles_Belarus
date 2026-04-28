@@ -85,25 +85,43 @@ def load_data() -> pd.DataFrame:
             page += 1
         return rows
 
-    df_prod   = pd.DataFrame(fetch_all("products"))
-    df_prices = pd.DataFrame(fetch_all("prices"))
+    df = None
 
-    # Мёрж: prices LEFT JOIN products (store денормализован в обоих — берём из prices)
-    df = df_prices.merge(
-        df_prod.drop(columns=["store"], errors="ignore"),
-        on="product_id",
-        how="left",
-    )
+    # Попытка 1: загрузить полную историю из products + prices
+    try:
+        rows_prod   = fetch_all("products")
+        rows_prices = fetch_all("prices")
+        if rows_prod and rows_prices:
+            df_prod   = pd.DataFrame(rows_prod)
+            df_prices = pd.DataFrame(rows_prices)
+            df = df_prices.merge(
+                df_prod.drop(columns=["store"], errors="ignore"),
+                on="product_id",
+                how="left",
+            )
+    except Exception:
+        df = None
+
+    # Попытка 2: фолбэк на вью tiles_v2 (только последний период)
+    if df is None or df.empty or "date" not in df.columns:
+        rows_v2 = fetch_all("tiles_v2")
+        df = pd.DataFrame(rows_v2) if rows_v2 else pd.DataFrame()
 
     # Парсинг дат и периодов
-    df["date_parsed"]  = pd.to_datetime(df["date"], format="%d.%m.%Y", errors="coerce")
-    df["period_label"] = df["date_parsed"].dt.strftime("%m.%Y")
+    if "date" in df.columns:
+        df["date_parsed"]  = pd.to_datetime(df["date"], format="%d.%m.%Y", errors="coerce")
+        df["period_label"] = df["date_parsed"].dt.strftime("%m.%Y")
+    else:
+        df["date_parsed"]  = pd.NaT
+        df["period_label"] = "—"
 
     for col in ["price", "discount", "thickness", "total_stock", "total_stock_units"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # Глобальный фильтр: только цены за м²
-    df = df[df["price"].notna() & (df["price_unit"] == "м²")]
+    if "price" in df.columns and "price_unit" in df.columns:
+        df = df[df["price"].notna() & (df["price_unit"] == "м²")]
     return df
 
 df = load_data()
