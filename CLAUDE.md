@@ -73,6 +73,13 @@ python dashboard/upload_to_supabase.py
 
 ## Ежемесячный мониторинг
 
+Автоматизировано через `.github/workflows/monthly-scrape.yml` — запускается сам 1-го числа каждого месяца
+(парсинг трёх источников → слияние и гармонизация → upsert в Supabase). Ручной перезапуск (например, если
+один источник упал) — на вкладке Actions репозитория → **Run workflow**, с чекбоксами по каждому источнику.
+Детали и план внедрения — `docs/superpowers/specs/2026-08-22-parser-automation-rollout-plan.md`.
+
+Ручной запуск локально (для отладки конкретного источника):
+
 ```bash
 # 1. Парсинг источников (по отдельности)
 python Altagamma/Altagamma.py
