@@ -112,21 +112,21 @@ jobs:
         continue-on-error: true
         with:
           name: data-21vek
-          path: .
+          path: 21vek
 
       - name: Download Altagamma data
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: data-altagamma
-          path: .
+          path: Altagamma
 
       - name: Download Modus data
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: data-modus
-          path: .
+          path: Modus_Keramica
 
       - name: Merge and harmonize
         working-directory: MERGED_BELARUS
