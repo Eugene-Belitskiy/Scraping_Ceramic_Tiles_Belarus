@@ -5,6 +5,7 @@ from datetime import datetime
 import time
 import subprocess
 from pathlib import Path
+import os
 
 BASE_DIR = Path(__file__).parent
 import re
@@ -40,6 +41,10 @@ def get_chrome_major_version():
 def make_options():
     options = uc.ChromeOptions()
     options.add_argument('--blink-settings=imagesEnabled=false')
+    if os.environ.get("CI"):
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
     return options
 
 
