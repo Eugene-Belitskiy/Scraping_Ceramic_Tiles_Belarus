@@ -1,0 +1,147 @@
+name: Monthly scrape and upload
+
+on:
+  schedule:
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+    inputs:
+      run_21vek:
+        description: 'Запустить парсер 21vek'
+        type: boolean
+        default: true
+      run_altagamma:
+        description: 'Запустить парсер Altagamma'
+        type: boolean
+        default: true
+      run_modus:
+        description: 'Запустить парсер Modus Keramica'
+        type: boolean
+        default: true
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  scrape-21vek:
+    if: github.event_name != 'workflow_dispatch' || inputs.run_21vek == true
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install -r requirements.txt
+
+      - run: python 21vek/21vek_request.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: data-21vek
+          path: 21vek/data_*_21_vek_Tile.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  scrape-altagamma:
+    if: github.event_name != 'workflow_dispatch' || inputs.run_altagamma == true
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
+      - run: pip install -r requirements.txt
+
+      - run: python Altagamma/Altagamma.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: data-altagamma
+          path: Altagamma/data_*_altagamma.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  scrape-modus:
+    if: github.event_name != 'workflow_dispatch' || inputs.run_modus == true
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install -r requirements.txt
+
+      - run: python Modus_Keramica/Modus.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: data-modus
+          path: Modus_Keramica/data_*_Modus.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  merge-and-upload:
+    needs: [scrape-21vek, scrape-altagamma, scrape-modus]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install -r requirements.txt
+
+      - name: Download 21vek data
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: data-21vek
+          path: .
+
+      - name: Download Altagamma data
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: data-altagamma
+          path: .
+
+      - name: Download Modus data
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: data-modus
+          path: .
+
+      - name: Merge and harmonize
+        working-directory: MERGED_BELARUS
+        run: python Main_scraping_Belarus.py
+
+      - name: Upload to Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python dashboard/upload_to_supabase.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: merged-data
+          path: |
+            MERGED_BELARUS/products.json
+            MERGED_BELARUS/prices.json
+          retention-days: 30
