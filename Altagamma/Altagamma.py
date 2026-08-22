@@ -195,7 +195,7 @@ def get_data():
 
 
 def main():
-    # get_urls_tile()
+    get_urls_tile()
     get_data()
 
 
