@@ -3,7 +3,9 @@ from bs4 import BeautifulSoup
 import json
 from datetime import datetime
 import time
+from pathlib import Path
 
+BASE_DIR = Path(__file__).parent
 start_time = time.time()
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
@@ -63,21 +65,31 @@ def get_url_tile():
         print(f'Обработал {i} из {pages_counts} страниц')
 
 
-    with open(f'url_list_{cur_data_file}_21_vek_Tile.txt', 'a') as file:
+    with open(BASE_DIR / f'url_list_{cur_data_file}_21_vek_Tile.txt', 'a') as file:
         for line in url_list:
             file.write(f'{line}\n')
-    with open(f"data_{cur_data_file}_21_vek_Tile_BASE.json", 'w', encoding="utf-8") as json_file:
+    with open(BASE_DIR / f"data_{cur_data_file}_21_vek_Tile_BASE.json", 'w', encoding="utf-8") as json_file:
         json.dump(UNP_list, json_file, indent=4, ensure_ascii=False)
 
 
 def get_data():
-    data_dict = []
+    result_path = BASE_DIR / f"data_{cur_data_file}_21_vek_Tile.json"
+    if result_path.exists():
+        with open(result_path, 'r', encoding='utf-8') as f:
+            data_dict = json.load(f)
+        already_done = {r['Ссылка'] for r in data_dict}
+    else:
+        data_dict = []
+        already_done = set()
     n = 1
     break_line = []
     break_line_count = 0
-    with open(f'url_list_{cur_data_file}_21_vek_Tile.txt') as file:
-        lines = [line.strip() for line in file.readlines()]
+    with open(BASE_DIR / f'url_list_{cur_data_file}_21_vek_Tile.txt') as file:
+        lines = list(dict.fromkeys(line.strip() for line in file if line.strip()))
         for line in lines:
+            if line in already_done:
+                n += 1
+                continue
             try:
                 q = requests.get(url=line, headers=headers)
                 result = q.content
@@ -167,10 +179,10 @@ def get_data():
             n += 1
 
         print(f'Сломанных ссылок: {break_line_count}')
-        with open(f"data_{cur_data_file}_21_vek_Tile.json", 'w', encoding="utf-8") as json_file:
+        with open(BASE_DIR / f"data_{cur_data_file}_21_vek_Tile.json", 'w', encoding="utf-8") as json_file:
             json.dump(data_dict, json_file, indent=4, ensure_ascii=False)
 
-        with open(f'urls_break_{cur_data_file}_21_vek-WC.txt', 'a') as file:
+        with open(BASE_DIR / f'urls_break_{cur_data_file}_21_vek-WC.txt', 'a') as file:
             for line in break_line:
                 file.write(f'{line}\n')
 
@@ -180,7 +192,7 @@ def get_new_data():
     n = 1
     break_line = []
     break_line_count = 0
-    with open(f'new_url_list_{cur_data_file}_21_vek_Tile.txt') as file:
+    with open(BASE_DIR / f'new_url_list_{cur_data_file}_21_vek_Tile.txt') as file:
         lines = [line.strip() for line in file.readlines()]
         for line in lines:
             try:
@@ -269,18 +281,18 @@ def get_new_data():
             n += 1
 
         print(f'Сломанных ссылок: {break_line_count}')
-        with open(f"new_data_{cur_data_file}_21_vek_Tile.json", 'w', encoding="utf-8") as json_file:
+        with open(BASE_DIR / f"new_data_{cur_data_file}_21_vek_Tile.json", 'w', encoding="utf-8") as json_file:
             json.dump(data_dict, json_file, indent=4, ensure_ascii=False)
 
-        with open(f'new_urls_break_{cur_data_file}_21_vek-WC.txt', 'a') as file:
+        with open(BASE_DIR / f'new_urls_break_{cur_data_file}_21_vek-WC.txt', 'a') as file:
             for line in break_line:
                 file.write(f'{line}\n')
 
 
 def new_url_list(prev_month):
-    with open(f"data_{prev_month}_21_vek_Tile.json", 'r', encoding='utf-8') as f:
+    with open(BASE_DIR / f"data_{prev_month}_21_vek_Tile.json", 'r', encoding='utf-8') as f:
         data_prev = json.load(f)
-    with open(f"data_{cur_data_file}_21_vek_Tile_BASE.json", 'r', encoding='utf-8') as f:
+    with open(BASE_DIR / f"data_{cur_data_file}_21_vek_Tile_BASE.json", 'r', encoding='utf-8') as f:
         data_new = json.load(f)
 
     base_of_url = []
@@ -292,19 +304,19 @@ def new_url_list(prev_month):
         if i_['Ссылка'] not in base_of_url:
             new_url_list.append(i_['Ссылка'])
 
-    with open(f'new_url_list_{cur_data_file}_21_vek_Tile.txt', 'a') as file:
+    with open(BASE_DIR / f'new_url_list_{cur_data_file}_21_vek_Tile.txt', 'a') as file:
         for line in new_url_list:
             file.write(f'{line}\n')
 
 
 def add_def(prev_month):
     try:
-        with open(f"data_finally_{prev_month}_21_vek_Tile.json", 'r', encoding='utf-8') as f:
+        with open(BASE_DIR / f"data_finally_{prev_month}_21_vek_Tile.json", 'r', encoding='utf-8') as f:
             data_prev = json.load(f)
     except:
-        with open(f"data_{prev_month}_21_vek_Tile.json", 'r', encoding='utf-8') as f:
+        with open(BASE_DIR / f"data_{prev_month}_21_vek_Tile.json", 'r', encoding='utf-8') as f:
             data_prev = json.load(f)
-    with open(f"data_{cur_data_file}_21_vek_Tile_BASE.json", 'r', encoding='utf-8') as f:
+    with open(BASE_DIR / f"data_{cur_data_file}_21_vek_Tile_BASE.json", 'r', encoding='utf-8') as f:
         data_new = json.load(f)
     for i in range(len(data_prev)):
         for i_ in data_new:
@@ -316,20 +328,20 @@ def add_def(prev_month):
             else:
                 continue
 
-    with open(f"data_{cur_data_file}_21_vek_Tile.json", 'w', encoding="utf-8") as json_file:
+    with open(BASE_DIR / f"data_{cur_data_file}_21_vek_Tile.json", 'w', encoding="utf-8") as json_file:
         json.dump(data_prev, json_file, indent=4, ensure_ascii=False)
 
 
 def get_finally_data():
-    with open(f"data_{cur_data_file}_21_vek_Tile.json", 'r', encoding='utf-8') as f:
+    with open(BASE_DIR / f"data_{cur_data_file}_21_vek_Tile.json", 'r', encoding='utf-8') as f:
         data_prev = json.load(f)
-    with open(f"new_data_{cur_data_file}_21_vek_Tile.json", 'r', encoding='utf-8') as f:
+    with open(BASE_DIR / f"new_data_{cur_data_file}_21_vek_Tile.json", 'r', encoding='utf-8') as f:
         data_new = json.load(f)
 
     for i in data_new:
         data_prev.append(i)
 
-    with open(f"data_finally_{cur_data_file}_21_vek_Tile_finally.json", 'w', encoding="utf-8") as json_file:
+    with open(BASE_DIR / f"data_finally_{cur_data_file}_21_vek_Tile_finally.json", 'w', encoding="utf-8") as json_file:
         json.dump(data_prev, json_file, indent=4, ensure_ascii=False)
 
 

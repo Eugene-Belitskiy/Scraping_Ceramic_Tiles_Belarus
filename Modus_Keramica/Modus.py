@@ -3,7 +3,9 @@ from bs4 import BeautifulSoup
 import json
 from datetime import datetime
 import time
+from pathlib import Path
 
+BASE_DIR = Path(__file__).parent
 start_time = time.time()
 
 cur_data_file = datetime.now().strftime("%m.%Y")
@@ -31,21 +33,30 @@ def get_url_tile():
             url_list.append(page_url)
         print(f'Обработал {i} из {pages_count} страниц')
     url_list = list(set(url_list))
-    with open(f'url_{cur_data_file}_Modus.txt', 'a') as file:
+    with open(BASE_DIR / f'url_{cur_data_file}_Modus.txt', 'a') as file:
         for line in url_list:
             file.write(f'{line}\n')
 
 
 def get_data():
-    data_dict = []
+    result_path = BASE_DIR / f"data_{cur_data_file}_Modus.json"
+    if result_path.exists():
+        with open(result_path, 'r', encoding='utf-8') as f:
+            data_dict = json.load(f)
+        already_done = {r['Ссылка'] for r in data_dict}
+    else:
+        data_dict = []
+        already_done = set()
     n = 1
     break_line = []
     break_line_count = 0
-    with open(f'url_{cur_data_file}_Modus.txt') as file:
-
-        lines = [line.strip() for line in file.readlines()]
+    with open(BASE_DIR / f'url_{cur_data_file}_Modus.txt') as file:
+        lines = list(dict.fromkeys(line.strip() for line in file if line.strip()))
 
         for line in lines:
+            if line in already_done:
+                n += 1
+                continue
 
             try:
                 q = requests.get(url=line)
@@ -117,15 +128,15 @@ def get_data():
             n += 1
 
         print(f'Сломанных ссылок: {break_line_count}')
-        with open(f"data_{cur_data_file}_Modus.json", 'w', encoding="utf-8") as json_file:
+        with open(BASE_DIR / f"data_{cur_data_file}_Modus.json", 'w', encoding="utf-8") as json_file:
             json.dump(data_dict, json_file, indent=4, ensure_ascii=False)
 
-        with open(f"urls_break_{cur_data_file}_Modus.json", 'w', encoding="utf-8") as json_file:
+        with open(BASE_DIR / f"urls_break_{cur_data_file}_Modus.json", 'w', encoding="utf-8") as json_file:
             json.dump(break_line, json_file, indent=4, ensure_ascii=False)
 
 
 def main():
-    get_url_tile()
+    # get_url_tile()
     get_data()
 
 
