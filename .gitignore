@@ -74,6 +74,11 @@ dashboard/.env
 !requirements.json
 !docs/examples/*.json
 
+# Resumable-scraping URL state files
+url_list_*.txt
+new_url_list_*.txt
+url_*.txt
+
 # ChromeDriver
 ChromeDriver/
 chromedriver*
