@@ -54,8 +54,7 @@ def get_url_tile():
                                                                                                            '').replace(
                     ' ', '')
             except:
-                price_base = page.find('span',
-                                       class_='CardStatus_statusText__u1LeJ Text-module__text Text-module__tiny Text-module__bold').text.strip()
+                price_base = page.find('div', {'data-testid': 'card-status'}).text.strip()
 
             try:
                 old_price_base = page.find('span', {'data-testid': 'card-old-price'}).text.strip().replace(' р.',
