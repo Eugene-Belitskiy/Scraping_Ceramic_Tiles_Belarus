@@ -1,3 +1,4 @@
+import random
 import requests
 from bs4 import BeautifulSoup
 import json
@@ -13,7 +14,10 @@ headers = {
 }
 cur_data_file = datetime.now().strftime("%m.%Y")
 
-MAX_WORKERS = 12
+# 21vek.by отвечает 429 (без Retry-After) уже при ~10+ одновременных соединениях —
+# держим параллелизм умеренным и полагаемся на retry с backoff как на основную защиту.
+MAX_WORKERS = 5
+MAX_RETRIES = 8
 
 
 def make_session():
@@ -23,6 +27,31 @@ def make_session():
     session.mount('https://', adapter)
     session.mount('http://', adapter)
     return session
+
+
+def get_with_retry(session, url, timeout=30, max_retries=MAX_RETRIES):
+    """GET с ретраями при rate-limit (429), 5xx и обрывах соединения."""
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            r = session.get(url, timeout=timeout)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            last_exc = e
+            time.sleep(min(2 ** attempt, 40) + random.uniform(0, 1))
+            continue
+
+        if r.status_code == 429 or r.status_code >= 500:
+            retry_after = r.headers.get('Retry-After')
+            delay = float(retry_after) if retry_after else min(2 ** attempt, 40)
+            time.sleep(delay + random.uniform(0, 1))
+            continue
+
+        r.raise_for_status()
+        return r
+
+    if last_exc:
+        raise last_exc
+    raise RuntimeError(f'Не удалось получить {url}: rate-limit не снялся за {max_retries} попыток')
 
 
 def get_url_tile():
@@ -86,7 +115,7 @@ def get_url_tile():
 def fetch_card(session, line):
     """Забирает и парсит одну карточку товара. Возвращает (True, data) либо (False, line)."""
     try:
-        q = session.get(url=line, timeout=30)
+        q = get_with_retry(session, line)
         result = q.content
         soup = BeautifulSoup(result, 'lxml')
         cur_data = datetime.now().strftime("%d.%m.%Y")
