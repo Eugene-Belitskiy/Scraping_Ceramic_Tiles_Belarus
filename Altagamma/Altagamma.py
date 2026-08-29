@@ -20,6 +20,14 @@ cur_data_file = datetime.now().strftime("%m.%Y")
 
 
 def get_chrome_major_version():
+    # CI (browser-actions/setup-chrome) сообщает точную установленную версию напрямую
+    env_version = os.environ.get("CHROME_VERSION")
+    if env_version:
+        match = re.search(r'(\d+)', env_version)
+        if match:
+            return int(match.group(1))
+
+    # Windows: версия из реестра
     registry_paths = [
         r'HKEY_CURRENT_USER\Software\Google\Chrome\BLBeacon',
         r'HKEY_LOCAL_MACHINE\SOFTWARE\Google\Chrome\BLBeacon',
@@ -35,6 +43,20 @@ def get_chrome_major_version():
                 return int(match.group(1))
         except Exception:
             continue
+
+    # Linux/macOS: спросить бинарник напрямую
+    for binary in ('google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium'):
+        try:
+            result = subprocess.run(
+                [binary, '--version'],
+                capture_output=True, text=True
+            )
+            match = re.search(r'(\d+)\.\d+\.\d+\.\d+', result.stdout)
+            if match:
+                return int(match.group(1))
+        except Exception:
+            continue
+
     return None
 
 
@@ -49,10 +71,18 @@ def make_options():
 
 
 def create_driver():
+    # Полагаться на автодетект undetected-chromedriver ненадёжно в CI — он может
+    # скачать ChromeDriver не той версии, что установленный Chrome. Если версию
+    # браузера удаётся определить заранее — передаём её явно.
+    version = get_chrome_major_version()
     try:
+        if version:
+            return uc.Chrome(options=make_options(), version_main=version)
         return uc.Chrome(options=make_options())
     except Exception as e:
         print(f'[!] Запуск не удался: {e}')
+        if version:
+            raise
         version = get_chrome_major_version()
         if version:
             print(f'[+] Chrome {version} обнаружен, скачиваю ChromeDriver {version}...')

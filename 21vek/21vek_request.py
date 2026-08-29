@@ -31,7 +31,7 @@ def get_url_tile():
         result = q.content
         soup = BeautifulSoup(result, 'lxml')
         # print(soup)
-        pages = soup.find_all('div', class_='ListingProduct_product__WBPsd')
+        pages = soup.find_all('div', class_='ProductCard_product__jsAgo')
         # print(pages)
         for page in pages:
             name_base = page.find('a', {'data-testid': 'card-info'}).text.strip()
