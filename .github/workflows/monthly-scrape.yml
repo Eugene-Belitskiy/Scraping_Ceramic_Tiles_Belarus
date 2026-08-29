@@ -21,6 +21,10 @@ on:
 env:
   PYTHON_VERSION: '3.11'
 
+permissions:
+  contents: read
+  actions: read  # нужно action-download-artifact ниже, чтобы читать артефакты прошлых запусков
+
 jobs:
   scrape-21vek:
     if: github.event_name != 'workflow_dispatch' || inputs.run_21vek == true
@@ -32,6 +36,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      # Довыгружает то, что уже успешно собрали в предыдущем запуске ЭТОГО ЖЕ месяца
+      # (имя файла результата привязано к месяцу, поэтому в начале нового месяца
+      # восстанавливать нечего - шаг просто ничего не найдёт и продолжит без него).
+      # already_done в get_data() сам пропустит уже готовое и дотянет только то,
+      # что не удалось в прошлый раз.
+      - name: Restore previous run's partial results (top-up within the same month)
+        uses: dawidd6/action-download-artifact@v24
+        continue-on-error: true
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: monthly-scrape.yml
+          workflow_conclusion: ''
+          name: data-21vek
+          path: 21vek
+          if_no_artifact_found: warn
 
       - run: pip install -r requirements.txt
 
@@ -56,6 +76,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Restore previous run's partial results (top-up within the same month)
+        uses: dawidd6/action-download-artifact@v24
+        continue-on-error: true
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: monthly-scrape.yml
+          workflow_conclusion: ''
+          name: data-altagamma
+          path: Altagamma
+          if_no_artifact_found: warn
 
       - uses: browser-actions/setup-chrome@v2
         id: setup-chrome
@@ -95,6 +126,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Restore previous run's partial results (top-up within the same month)
+        uses: dawidd6/action-download-artifact@v24
+        continue-on-error: true
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: monthly-scrape.yml
+          workflow_conclusion: ''
+          name: data-modus
+          path: Modus_Keramica
+          if_no_artifact_found: warn
 
       - run: pip install -r requirements.txt
 
