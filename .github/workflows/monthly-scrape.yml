@@ -57,16 +57,18 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - uses: browser-actions/setup-chrome@v1
+      - uses: browser-actions/setup-chrome@v2
         id: setup-chrome
         with:
           chrome-version: stable
+          install-chromedriver: true
 
       - run: pip install -r requirements.txt
 
       - run: python Altagamma/Altagamma.py
         env:
           CHROME_VERSION: ${{ steps.setup-chrome.outputs.chrome-version }}
+          CHROMEDRIVER_PATH: ${{ steps.setup-chrome.outputs.chromedriver-path }}
 
       - uses: actions/upload-artifact@v4
         with:

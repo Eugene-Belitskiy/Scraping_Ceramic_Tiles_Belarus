@@ -71,9 +71,16 @@ def make_options():
 
 
 def create_driver():
-    # Полагаться на автодетект undetected-chromedriver ненадёжно в CI — он может
-    # скачать ChromeDriver не той версии, что установленный Chrome. Если версию
-    # браузера удаётся определить заранее — передаём её явно.
+    # В CI browser-actions/setup-chrome ставит Chrome и (install-chromedriver: true)
+    # ChromeDriver ТОЙ ЖЕ сборки одним шагом — это единственный надёжный вариант.
+    # Автодетект версии внутри undetected-chromedriver (version_main=N) дважды подряд
+    # промахивался мимо реально установленного Chrome в CI (качал driver на 1 major
+    # версию вперёд), поэтому в CI он больше не используется.
+    driver_path = os.environ.get("CHROMEDRIVER_PATH")
+    if driver_path:
+        return uc.Chrome(options=make_options(), driver_executable_path=driver_path)
+
+    # Локальный запуск (Windows) — прежнее поведение с автодетектом версии.
     version = get_chrome_major_version()
     try:
         if version:
