@@ -14,10 +14,15 @@ headers = {
 }
 cur_data_file = datetime.now().strftime("%m.%Y")
 
-# 21vek.by отвечает 429 (без Retry-After) уже при ~10+ одновременных соединениях —
-# держим параллелизм умеренным и полагаемся на retry с backoff как на основную защиту.
-MAX_WORKERS = 5
+# 21vek.by отвечает 429 (без Retry-After) даже при умеренном параллелизме — судя по
+# тому, что бэкофф внутри get_with_retry не спасает почти 2/3 карточек, лимит похож
+# на общий бюджет запросов в единицу времени с этого IP, а не просто на число
+# одновременных соединений. Держим параллелизм совсем небольшим и добавляем ретраи
+# целыми раундами поверх retry внутри одной карточки.
+MAX_WORKERS = 2
 MAX_RETRIES = 8
+RETRY_ROUNDS = 3
+ROUND_PAUSE = 45
 
 
 def make_session():
@@ -208,8 +213,6 @@ def get_data():
     else:
         data_dict = []
         already_done = set()
-    break_line = []
-    break_line_count = 0
     with open(BASE_DIR / f'url_list_{cur_data_file}_21_vek_Tile.txt') as file:
         lines = list(dict.fromkeys(line.strip() for line in file if line.strip()))
 
@@ -226,11 +229,32 @@ def get_data():
                 data_dict.append(result)
                 print(f'Обработано карточек: {n}')
             else:
-                break_line_count += 1
-                break_line.append(result)
                 print(f'Карточка пропущена. Обработано карточек: {n}')
 
-    print(f'Сломанных ссылок: {break_line_count}')
+    break_line = [line for line in to_fetch if line not in {r['Ссылка'] for r in data_dict}]
+
+    # get_with_retry() уже пытается пережить кратковременный rate-limit внутри одной
+    # карточки, но если сайт держит 429 дольше, чем хватает её ретраев, карточка
+    # попадает в break_line. Даём ей ещё несколько отдельных раундов - с паузой между
+    # ними, чтобы застать момент, когда лимит на сайте отпустит - прежде чем сдаться.
+    for round_num in range(1, RETRY_ROUNDS + 1):
+        if not break_line:
+            break
+        print(f'[Раунд повтора {round_num}/{RETRY_ROUNDS}] Пауза {ROUND_PAUSE}с, затем повтор {len(break_line)} сломанных ссылок...')
+        time.sleep(ROUND_PAUSE)
+        still_broken = []
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {executor.submit(fetch_card, session, line): line for line in break_line}
+            for future in as_completed(futures):
+                success, result = future.result()
+                if success:
+                    data_dict.append(result)
+                    print(f'[Раунд повтора {round_num}] Восстановлено: {result["Ссылка"]}')
+                else:
+                    still_broken.append(result)
+        break_line = still_broken
+
+    print(f'Сломанных ссылок: {len(break_line)}')
     with open(BASE_DIR / f"data_{cur_data_file}_21_vek_Tile.json", 'w', encoding="utf-8") as json_file:
         json.dump(data_dict, json_file, indent=4, ensure_ascii=False)
 
