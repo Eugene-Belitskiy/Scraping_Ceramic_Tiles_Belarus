@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_DIR = Path(__file__).parent
 start_time = time.time()
@@ -11,6 +12,17 @@ headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
 }
 cur_data_file = datetime.now().strftime("%m.%Y")
+
+MAX_WORKERS = 12
+
+
+def make_session():
+    session = requests.Session()
+    session.headers.update(headers)
+    adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    return session
 
 
 def get_url_tile():
@@ -72,6 +84,93 @@ def get_url_tile():
         json.dump(UNP_list, json_file, indent=4, ensure_ascii=False)
 
 
+def fetch_card(session, line):
+    """Забирает и парсит одну карточку товара. Возвращает (True, data) либо (False, line)."""
+    try:
+        q = session.get(url=line, timeout=30)
+        result = q.content
+        soup = BeautifulSoup(result, 'lxml')
+        cur_data = datetime.now().strftime("%d.%m.%Y")
+        cur_time = datetime.now().strftime("%H:%M")
+
+        try:
+            name = soup.find("h1").text.strip()
+        except:
+            name = "Не_указано"
+
+        try:
+            new_price = soup.find('div', {'data-testid': 'squarePrice'}).find('span').text.strip()
+            price_units = 'м2'
+
+        except:
+            try:
+                new_price = soup.find('div', {'data-testid': 'unitPrice'}).find('span').text.strip()
+                price_units = 'шт'
+            except:
+                new_price = None
+                price_units = None
+
+        try:
+            old_price = soup.find('div', {'data-testid': 'squarePrice'}).find('div').text.strip()
+
+        except:
+            try:
+                old_price = soup.find('div', {'data-testid': 'unitPrice'}).find('div').text.strip()
+            except:
+                old_price = new_price
+
+        if new_price == "Нет в наличии":
+            stocs = new_price
+        else:
+            stocs = "В наличии"
+
+        Manufacture_Info = None
+        try:
+            Manufacture_Info = soup.find('div', {'data-testid': 'bottomBlockProducerInfo'}).find_all('p')
+            for i in range(len(Manufacture_Info)):
+                if 'Страна производства' in Manufacture_Info[i].text:
+                    country = Manufacture_Info[i].text.replace('Страна производства:', '').strip()
+                if 'Производитель' in Manufacture_Info[i].text:
+                    manufacturer = Manufacture_Info[i].text.replace('Производитель:', '').strip()
+                if 'Поставщик' in Manufacture_Info[i].text:
+                    supplier = Manufacture_Info[i].text.replace('Поставщик:', '').strip()
+        except:
+            country, manufacturer, supplier = 'Не указано / ошибка', 'Не указано / ошибка', 'Не указано / ошибка'
+
+        left_spec = []
+        right_spec = []
+
+        specs = soup.find('div', {'id': 'attributesBlock'}).find_all('dt', class_="Attribute_title__rQ5Dp")
+        for spec in specs:
+            spec = spec.text.strip()
+            left_spec.append(spec)
+
+        rspecs = soup.find('div', {'id': 'attributesBlock'}).find_all('dd', class_="Attribute_value__re9Rr")
+        for rspec in rspecs:
+            rspec = rspec.text.strip()
+            right_spec.append(rspec)
+
+        specs_dict = {left_spec[i].strip(): right_spec[i].strip() for i in range(len(left_spec))}
+        data = {
+            "Полное наименование": name,
+            f"Действующая цена_{cur_data_file}": new_price,
+            f"Цена без скидки_{cur_data_file}": old_price,
+            "Единица измерения цены": price_units,
+            "Ссылка": line,
+            "Дата мониторинга": cur_data,
+            "Время мониторинга": cur_time,
+            "Магазин": "21 век",
+            "В наличии": stocs,
+            "Страна производства": country,
+            "Производитель": manufacturer,
+            "Поставщик": supplier
+        }
+
+        return True, data | specs_dict
+    except:
+        return False, line
+
+
 def get_data():
     result_path = BASE_DIR / f"data_{cur_data_file}_21_vek_Tile.json"
     if result_path.exists():
@@ -81,110 +180,35 @@ def get_data():
     else:
         data_dict = []
         already_done = set()
-    n = 1
     break_line = []
     break_line_count = 0
     with open(BASE_DIR / f'url_list_{cur_data_file}_21_vek_Tile.txt') as file:
         lines = list(dict.fromkeys(line.strip() for line in file if line.strip()))
-        for line in lines:
-            if line in already_done:
-                n += 1
-                continue
-            try:
-                q = requests.get(url=line, headers=headers)
-                result = q.content
-                soup = BeautifulSoup(result, 'lxml')
-                cur_data = datetime.now().strftime("%d.%m.%Y")
-                cur_time = datetime.now().strftime("%H:%M")
 
-                try:
-                    name = soup.find("h1").text.strip()
-                except:
-                    name = "Не_указано"
+    to_fetch = [line for line in lines if line not in already_done]
+    n = len(lines) - len(to_fetch)
 
-                try:
-                    new_price = soup.find('div', {'data-testid': 'squarePrice'}).find('span').text.strip()
-                    price_units = 'м2'
-
-                except:
-                    try:
-                        new_price = soup.find('div', {'data-testid': 'unitPrice'}).find('span').text.strip()
-                        price_units = 'шт'
-                    except:
-                        new_price = None
-                        price_units = None
-
-                try:
-                    old_price = soup.find('div', {'data-testid': 'squarePrice'}).find('div').text.strip()
-
-                except:
-                    try:
-                        old_price = soup.find('div', {'data-testid': 'unitPrice'}).find('div').text.strip()
-                    except:
-                        old_price = new_price
-
-                if new_price == "Нет в наличии":
-                    stocs = new_price
-                else:
-                    stocs = "В наличии"
-
-                Manufacture_Info = None
-                try:
-                    Manufacture_Info = soup.find('div', {'data-testid': 'bottomBlockProducerInfo'}).find_all('p')
-                    for i in range(len(Manufacture_Info)):
-                        if 'Страна производства' in Manufacture_Info[i].text:
-                            country = Manufacture_Info[i].text.replace('Страна производства:', '').strip()
-                        if 'Производитель' in Manufacture_Info[i].text:
-                            manufacturer = Manufacture_Info[i].text.replace('Производитель:', '').strip()
-                        if 'Поставщик' in Manufacture_Info[i].text:
-                            supplier = Manufacture_Info[i].text.replace('Поставщик:', '').strip()
-                except:
-                    country, manufacturer, supplier = 'Не указано / ошибка', 'Не указано / ошибка', 'Не указано / ошибка'
-
-                left_spec = []
-                right_spec = []
-
-                specs = soup.find('div', {'id': 'attributesBlock'}).find_all('dt', class_="Attribute_title__rQ5Dp")
-                for spec in specs:
-                    spec = spec.text.strip()
-                    left_spec.append(spec)
-
-                rspecs = soup.find('div', {'id': 'attributesBlock'}).find_all('dd', class_="Attribute_value__re9Rr")
-                for rspec in rspecs:
-                    rspec = rspec.text.strip()
-                    right_spec.append(rspec)
-
-                specs_dict = {left_spec[i].strip(): right_spec[i].strip() for i in range(len(left_spec))}
-                data = {
-                    "Полное наименование": name,
-                    f"Действующая цена_{cur_data_file}": new_price,
-                    f"Цена без скидки_{cur_data_file}": old_price,
-                    "Единица измерения цены": price_units,
-                    "Ссылка": line,
-                    "Дата мониторинга": cur_data,
-                    "Время мониторинга": cur_time,
-                    "Магазин": "21 век",
-                    "В наличии": stocs,
-                    "Страна производства": country,
-                    "Производитель": manufacturer,
-                    "Поставщик": supplier
-                }
-
-                data_dict.append(data | specs_dict)
-                print(f'Обработано карточек: {n}')
-            except:
-                break_line_count += 1
-                break_line.append(line)
-                print(f'Карточка пропущена. Обработано карточек: {n}')
+    session = make_session()
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(fetch_card, session, line) for line in to_fetch]
+        for future in as_completed(futures):
             n += 1
+            success, result = future.result()
+            if success:
+                data_dict.append(result)
+                print(f'Обработано карточек: {n}')
+            else:
+                break_line_count += 1
+                break_line.append(result)
+                print(f'Карточка пропущена. Обработано карточек: {n}')
 
-        print(f'Сломанных ссылок: {break_line_count}')
-        with open(BASE_DIR / f"data_{cur_data_file}_21_vek_Tile.json", 'w', encoding="utf-8") as json_file:
-            json.dump(data_dict, json_file, indent=4, ensure_ascii=False)
+    print(f'Сломанных ссылок: {break_line_count}')
+    with open(BASE_DIR / f"data_{cur_data_file}_21_vek_Tile.json", 'w', encoding="utf-8") as json_file:
+        json.dump(data_dict, json_file, indent=4, ensure_ascii=False)
 
-        with open(BASE_DIR / f'urls_break_{cur_data_file}_21_vek-WC.txt', 'a') as file:
-            for line in break_line:
-                file.write(f'{line}\n')
+    with open(BASE_DIR / f'urls_break_{cur_data_file}_21_vek-WC.txt', 'a') as file:
+        for line in break_line:
+            file.write(f'{line}\n')
 
 
 def get_new_data():

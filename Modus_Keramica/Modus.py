@@ -4,11 +4,22 @@ import json
 from datetime import datetime
 import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_DIR = Path(__file__).parent
 start_time = time.time()
 
 cur_data_file = datetime.now().strftime("%m.%Y")
+
+MAX_WORKERS = 12
+
+
+def make_session():
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    return session
 
 
 def get_url_tile():
@@ -38,6 +49,73 @@ def get_url_tile():
             file.write(f'{line}\n')
 
 
+def fetch_card(session, line):
+    """Забирает и парсит одну карточку товара. Возвращает (True, data) либо (False, line)."""
+    try:
+        q = session.get(url=line, timeout=30)
+        result = q.content
+        soup = BeautifulSoup(result, 'lxml')
+        cur_data = datetime.now().strftime("%d.%m.%Y")
+        cur_time = datetime.now().strftime("%H:%M")
+
+        try:
+            name = soup.find("h1").text.strip()
+        except:
+            name = "None"
+
+        try:
+            stocks = soup.find("div", class_='availability').text.strip()
+        except:
+            stocks = None
+
+        try:
+            new_price = soup.find("div", class_='price-block').find('div',
+                                                                    class_='price').text.strip()  # .replace(f'{price_units}','').
+        except:
+            new_price = 'Error'
+
+        try:
+            price_sale = soup.find('div', class_='price-sale').text
+        except:
+            price_sale = 'Error'
+
+        try:
+            price_units = soup.find("div", class_='price-block').find('div', class_='price').find(
+                'span').text.strip()
+        except:
+            price_units = 'Error'
+
+        left_spec = []
+        right_spec = []
+
+        specs = soup.find_all('p', class_="characteristic-name")
+        for spec in specs:
+            spec = spec.text.strip()
+            left_spec.append(spec)
+
+        rspecs = soup.find_all('p', class_="characteristic-value")
+        for rspec in rspecs:
+            rspec = rspec.text.strip()
+            right_spec.append(rspec)
+        specs_dict = {left_spec[i].strip(): right_spec[i].strip() for i in range(len(left_spec))}
+
+        data = {
+            "Полное наименование": name,
+            "Действующая цена": new_price,
+            "Размер скидки": price_sale,
+            "Единица измерения цены": price_units,
+            "В наличии": stocks,
+            "Ссылка": line,
+            "Дата мониторинга": cur_data,
+            "Время мониторинга": cur_time,
+            "Магазин": "Модус керамика",
+        }
+
+        return True, data | specs_dict
+    except:
+        return False, line
+
+
 def get_data():
     result_path = BASE_DIR / f"data_{cur_data_file}_Modus.json"
     if result_path.exists():
@@ -47,92 +125,34 @@ def get_data():
     else:
         data_dict = []
         already_done = set()
-    n = 1
     break_line = []
     break_line_count = 0
     with open(BASE_DIR / f'url_{cur_data_file}_Modus.txt') as file:
         lines = list(dict.fromkeys(line.strip() for line in file if line.strip()))
 
-        for line in lines:
-            if line in already_done:
-                n += 1
-                continue
+    to_fetch = [line for line in lines if line not in already_done]
+    n = len(lines) - len(to_fetch)
 
-            try:
-                q = requests.get(url=line)
-                result = q.content
-                soup = BeautifulSoup(result, 'lxml')
-                cur_data = datetime.now().strftime("%d.%m.%Y")
-                cur_time = datetime.now().strftime("%H:%M")
-
-                try:
-                    name = soup.find("h1").text.strip()
-                except:
-                    name = "None"
-
-                try:
-                    stocks = soup.find("div", class_ = 'availability').text.strip()
-                except:
-                    stocks = None
-
-                try:
-                    new_price = soup.find("div", class_='price-block').find('div',
-                                                                            class_='price').text.strip()  # .replace(f'{price_units}','').
-                except:
-                    new_price = 'Error'
-
-                try:
-                    price_sale = soup.find('div', class_='price-sale').text
-                except:
-                    price_sale = 'Error'
-
-                try:
-                    price_units = soup.find("div", class_='price-block').find('div', class_='price').find(
-                        'span').text.strip()
-                except:
-                    price_units = 'Error'
-
-                left_spec = []
-                right_spec = []
-
-                specs = soup.find_all('p', class_="characteristic-name")
-                for spec in specs:
-                    spec = spec.text.strip()
-                    left_spec.append(spec)
-
-                rspecs = soup.find_all('p', class_="characteristic-value")
-                for rspec in rspecs:
-                    rspec = rspec.text.strip()
-                    right_spec.append(rspec)
-                specs_dict = {left_spec[i].strip(): right_spec[i].strip() for i in range(len(left_spec))}
-
-                data = {
-                    "Полное наименование": name,
-                    "Действующая цена": new_price,
-                    "Размер скидки": price_sale,
-                    "Единица измерения цены": price_units,
-                    "В наличии": stocks,
-                    "Ссылка": line,
-                    "Дата мониторинга": cur_data,
-                    "Время мониторинга": cur_time,
-                    "Магазин": "Модус керамика",
-                }
-
-                data_dict.append(data | specs_dict)
-                print(f'Обработано карточек: {n}')
-
-            except:
-                break_line_count += 1
-                break_line.append(line)
-                print(f'Карточка пропущена. Обработано карточек: {n}')
+    session = make_session()
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(fetch_card, session, line) for line in to_fetch]
+        for future in as_completed(futures):
             n += 1
+            success, result = future.result()
+            if success:
+                data_dict.append(result)
+                print(f'Обработано карточек: {n}')
+            else:
+                break_line_count += 1
+                break_line.append(result)
+                print(f'Карточка пропущена. Обработано карточек: {n}')
 
-        print(f'Сломанных ссылок: {break_line_count}')
-        with open(BASE_DIR / f"data_{cur_data_file}_Modus.json", 'w', encoding="utf-8") as json_file:
-            json.dump(data_dict, json_file, indent=4, ensure_ascii=False)
+    print(f'Сломанных ссылок: {break_line_count}')
+    with open(BASE_DIR / f"data_{cur_data_file}_Modus.json", 'w', encoding="utf-8") as json_file:
+        json.dump(data_dict, json_file, indent=4, ensure_ascii=False)
 
-        with open(BASE_DIR / f"urls_break_{cur_data_file}_Modus.json", 'w', encoding="utf-8") as json_file:
-            json.dump(break_line, json_file, indent=4, ensure_ascii=False)
+    with open(BASE_DIR / f"urls_break_{cur_data_file}_Modus.json", 'w', encoding="utf-8") as json_file:
+        json.dump(break_line, json_file, indent=4, ensure_ascii=False)
 
 
 def main():
