@@ -63,10 +63,18 @@ jobs:
           chrome-version: stable
           install-chromedriver: true
 
+      - name: Show setup-chrome outputs
+        run: |
+          echo "chrome-path: ${{ steps.setup-chrome.outputs.chrome-path }}"
+          echo "chrome-version: ${{ steps.setup-chrome.outputs.chrome-version }}"
+          echo "chromedriver-path: ${{ steps.setup-chrome.outputs.chromedriver-path }}"
+          echo "chromedriver-version: ${{ steps.setup-chrome.outputs.chromedriver-version }}"
+
       - run: pip install -r requirements.txt
 
       - run: python Altagamma/Altagamma.py
         env:
+          CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
           CHROME_VERSION: ${{ steps.setup-chrome.outputs.chrome-version }}
           CHROMEDRIVER_PATH: ${{ steps.setup-chrome.outputs.chromedriver-path }}
 
