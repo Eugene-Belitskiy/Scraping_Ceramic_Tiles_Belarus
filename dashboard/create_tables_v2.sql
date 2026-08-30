@@ -31,23 +31,31 @@ CREATE TABLE IF NOT EXISTS products (
 );
 
 -- =============================================================
--- ТАБЛИЦА ЦЕН И ОСТАТКОВ (одна запись на товар на дату)
+-- ТАБЛИЦА ЦЕН И ОСТАТКОВ (одна запись на товар на МЕСЯЦ)
 -- =============================================================
+-- Гранулярность — месяц, не день: мониторинг и так запускается раз в месяц,
+-- а до-заливка/ручной перезапуск в течение того же месяца должны ОБНОВЛЯТЬ
+-- эту же запись через upsert, а не плодить вторую. date/time при этом хранят
+-- дату и время последнего замера в рамках месяца, а не историю всех замеров.
 CREATE TABLE IF NOT EXISTS prices (
-    price_id            TEXT PRIMARY KEY,   -- "{product_id}_{date}"
+    price_id            TEXT PRIMARY KEY,   -- "{product_id}_{MM.YYYY}"
     product_id          TEXT NOT NULL REFERENCES products(product_id),
     store               TEXT,               -- денормализовано для запросов без JOIN
-    date                TEXT NOT NULL,      -- "DD.MM.YYYY"
-    time                TEXT,
+    date                TEXT NOT NULL,      -- "DD.MM.YYYY" последнего замера в этом месяце
+    time                TEXT,               -- "HH:MM" последнего замера в этом месяце
     price               FLOAT8,
     price_range         TEXT,
     discount            FLOAT8,
     discount_range      TEXT,
     availability        TEXT,
     total_stock         FLOAT8,             -- null: остатки не доступны для данного магазина
-    total_stock_units   INT,                -- null: остатки не доступны для данного магазина
-    UNIQUE (product_id, date)               -- один снимок цены на товар в день
+    total_stock_units   INT                 -- null: остатки не доступны для данного магазина
 );
+
+-- Миграция для уже существующей БД (создана до перехода на месячную
+-- гранулярность): старое ограничение "один снимок в день" конфликтовало бы
+-- с up-to-date price_id — на новых установках CREATE TABLE его уже не создаёт.
+ALTER TABLE prices DROP CONSTRAINT IF EXISTS prices_product_id_date_key;
 
 -- =============================================================
 -- ВЬЮ ДЛЯ ДАШБОРДА

@@ -501,12 +501,22 @@ def make_product_id(url: str) -> str:
     return hashlib.md5(url.encode('utf-8')).hexdigest()[:16]
 
 
+def month_from_date(date_str: str) -> str:
+    """"ДД.ММ.ГГГГ" -> "ММ.ГГГГ". Даёт то же значение, что и cur_data_file, но
+    из даты конкретной записи (устойчиво к смене месяца/бэкфиллу задним числом)."""
+    parts = (date_str or '').split('.')
+    if len(parts) == 3:
+        return f"{parts[1]}.{parts[2]}"
+    return cur_data_file
+
+
 def save_to_two_tables():
     """Записывает данные напрямую в products.json и prices.json.
 
     products.json — уникальные карточки товаров (идентифицируются по URL).
-    prices.json   — полная история цен (price_id = product_id + дата).
-    Повторный запуск безопасен: добавляются только новые записи.
+    prices.json   — по одной записи на товар на МЕСЯЦ (price_id = product_id + MM.YYYY).
+    Повторный запуск безопасен: новые товары/месяцы добавляются, повтор в
+    рамках уже отражённого месяца обновляет существующую запись на месте.
     """
     products_file = MERGED_DIR / 'products.json'
     prices_file = MERGED_DIR / 'prices.json'
@@ -522,13 +532,11 @@ def save_to_two_tables():
         except json.JSONDecodeError:
             print("[!] products.json поврежден. Создаю новый...")
 
-    existing_prices = []
-    seen_price_ids = set()
+    prices_by_id = {}
     if prices_file.exists():
         try:
             with open(prices_file, 'r', encoding='utf-8') as f:
-                existing_prices = json.load(f)
-            seen_price_ids = {p['price_id'] for p in existing_prices}
+                prices_by_id = {p['price_id']: p for p in json.load(f)}
         except json.JSONDecodeError:
             print("[!] prices.json поврежден. Создаю новый...")
 
@@ -546,8 +554,8 @@ def save_to_two_tables():
 
     new_products = 0
     new_prices = 0
+    updated_prices = 0
     skipped_no_url = 0
-    skipped_dup_price = 0
 
     for record in deduped_base:
         url = record.get('url', '')
@@ -557,8 +565,11 @@ def save_to_two_tables():
 
         pid = make_product_id(url)
         date = record.get('date', '')
-        time_val = record.get('time', '')
-        price_id = f"{pid}_{date}_{time_val}"
+        # Гранулярность - месяц, не дата+время: повторный скрапинг того же товара
+        # в течение того же месяца (до-заливка после сбоя, ручной перезапуск) должен
+        # ОБНОВЛЯТЬ единственную запись цены за месяц через upsert, а не плодить
+        # вторую. date/time внутри записи всё равно хранят время последнего замера.
+        price_id = f"{pid}_{month_from_date(date)}"
 
         if pid not in seen_ids:
             existing_products.append({
@@ -589,25 +600,29 @@ def save_to_two_tables():
             seen_ids.add(pid)
             new_products += 1
 
-        if price_id not in seen_price_ids:
-            existing_prices.append({
-                'price_id':          price_id,
-                'product_id':        pid,
-                'store':             record.get('store', ''),
-                'date':              date,
-                'time':              record.get('time', ''),
-                'price':             record.get('price'),
-                'price_range':       record.get('price_range'),
-                'discount':          record.get('discount'),
-                'discount_range':    record.get('discount_range'),
-                'availability':      record.get('availability', ''),
-                'total_stock':       record.get('total_stock'),
-                'total_stock_units': record.get('total_stock_units'),
-            })
-            seen_price_ids.add(price_id)
-            new_prices += 1
+        # Свежие данные всегда побеждают (как upsert в Supabase) — если price_id уже
+        # был в prices.json (та же цена в том же месяце, донакаченная повторно), это
+        # ОБНОВЛЕНИЕ строки, а не пропуск: иначе локальный файл разойдётся с БД.
+        if price_id in prices_by_id:
+            updated_prices += 1
         else:
-            skipped_dup_price += 1
+            new_prices += 1
+        prices_by_id[price_id] = {
+            'price_id':          price_id,
+            'product_id':        pid,
+            'store':             record.get('store', ''),
+            'date':              date,
+            'time':              record.get('time', ''),
+            'price':             record.get('price'),
+            'price_range':       record.get('price_range'),
+            'discount':          record.get('discount'),
+            'discount_range':    record.get('discount_range'),
+            'availability':      record.get('availability', ''),
+            'total_stock':       record.get('total_stock'),
+            'total_stock_units': record.get('total_stock_units'),
+        }
+
+    existing_prices = list(prices_by_id.values())
 
     with open(products_file, 'w', encoding='utf-8') as f:
         json.dump(existing_products, f, ensure_ascii=False, indent=4)
@@ -616,11 +631,9 @@ def save_to_two_tables():
         json.dump(existing_prices, f, ensure_ascii=False, indent=4)
 
     print(f"\n[OK] products.json: +{new_products} новых товаров (всего {len(existing_products)})")
-    print(f"[OK] prices.json:   +{new_prices} новых записей цен (всего {len(existing_prices)})")
+    print(f"[OK] prices.json:   +{new_prices} новых, ~{updated_prices} обновлённых записей цен (всего {len(existing_prices)})")
     if skipped_no_url:
         print(f"[!] Пропущено {skipped_no_url} записей без URL")
-    if skipped_dup_price:
-        print(f"[*] Пропущено {skipped_dup_price} дублирующихся записей цен")
 
 
 # ============= ГЛАВНАЯ ФУНКЦИЯ =============

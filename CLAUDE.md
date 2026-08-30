@@ -130,9 +130,10 @@ Scrapers (JSON) → Main_scraping_Belarus.py → products.json + prices.json
 - Идентификатор: `product_id = md5(url)[:16]`
 - Статичные характеристики: name, brand, country, format, material, design, color, ...
 
-**`prices`** — история цен (одна запись на товар на дату):
-- Идентификатор: `price_id = f"{product_id}_{date}_{time}"`
-- Динамические поля: price, discount, availability, date, time
+**`prices`** — цены (одна запись на товар на МЕСЯЦ, не на день):
+- Идентификатор: `price_id = f"{product_id}_{month_from_date(date)}"`, где месяц — `"MM.YYYY"` из даты замера
+- Динамические поля: price, discount, availability, date, time (date/time — момент **последнего** замера в этом месяце, не история всех замеров)
+- Повторный скрапинг того же товара в течение того же месяца (до-заливка после сбоя, ручной перезапуск workflow) обновляет ту же строку через upsert — не создаёт вторую. Прошлые месяцы не трогает — у них свой `price_id` с другим MM.YYYY.
 
 **`tiles_v2`** — вью для дашборда: JOIN products + prices, только **последние цены** каждого товара.
 Используется как фолбэк в `load_data()` если прямой доступ к таблицам недоступен.
@@ -142,7 +143,7 @@ Scrapers (JSON) → Main_scraping_Belarus.py → products.json + prices.json
 1. `dedup_by_url(data)` — убирает дублирующиеся URL **внутри** одного сырого JSON-файла (скрапер мог работать несколько дней подряд). Оставляет последнее вхождение.
 2. В `save_to_two_tables()` — полные дубликаты из `total_base` убираются перед записью.
 3. Товар попадает в `products.json` **один раз** (по product_id).
-4. Цена добавляется, если `price_id` (product_id + дата + время) ещё не существует.
+4. Цена добавляется/обновляется по `price_id` (product_id + месяц) — см. выше.
 
 ---
 
@@ -250,5 +251,5 @@ harmonized['primary_color'] = get_primary_color(harmonized.get('color', ''))
 | Поле цены 21vek не найдено (`price = None`) | Ключ динамический — искать через `startswith('Действующая цена_')` |
 | Толщина Modus неверная (в 10 раз больше) | Поле в СМ, умножить на 10 для мм |
 | Материал Modus = None | Нормализовать `"керамический гранит"` → `"керамогранит"` до вызова `determine_material()` |
-| Дубликаты цен в prices.json | `price_id` включает время — повторный запуск Main без перескрапинга не задваивает |
+| Повторная до-заливка того же месяца создаёт вторую цену | `price_id` теперь на уровне месяца (`product_id_MM.YYYY`) — upsert обновляет ту же строку, не задваивает. На старой БД нужно накатить `ALTER TABLE ... DROP CONSTRAINT prices_product_id_date_key` из `create_tables_v2.sql` |
 | `Slider min_value must be less than max_value` | Происходит при ровно 2 периодах — слайдер не показывается, используется `n_periods=2` |
