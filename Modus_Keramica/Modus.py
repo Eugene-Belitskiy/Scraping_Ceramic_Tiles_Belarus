@@ -2,6 +2,7 @@ import random
 import requests
 from bs4 import BeautifulSoup
 import json
+from collections import Counter
 from datetime import datetime
 import time
 from pathlib import Path
@@ -83,9 +84,16 @@ def get_url_tile():
 
 
 def fetch_card(session, line):
-    """Забирает и парсит одну карточку товара. Возвращает (True, data) либо (False, line)."""
+    """Забирает и парсит одну карточку товара. Возвращает (True, data, None) либо (False, line, reason)."""
     try:
         q = get_with_retry(session, line)
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else '?'
+        return False, line, f'HTTP {status} (запрос)'
+    except Exception as e:
+        return False, line, f'{type(e).__name__} (запрос)'
+
+    try:
         result = q.content
         soup = BeautifulSoup(result, 'lxml')
         cur_data = datetime.now().strftime("%d.%m.%Y")
@@ -144,9 +152,9 @@ def fetch_card(session, line):
             "Магазин": "Модус керамика",
         }
 
-        return True, data | specs_dict
-    except:
-        return False, line
+        return True, data | specs_dict, None
+    except Exception as e:
+        return False, line, f'{type(e).__name__} (парсинг, status={q.status_code})'
 
 
 def get_data():
@@ -164,17 +172,20 @@ def get_data():
     to_fetch = [line for line in lines if line not in already_done]
     n = len(lines) - len(to_fetch)
 
+    reasons = {}
+
     session = make_session()
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = [executor.submit(fetch_card, session, line) for line in to_fetch]
         for future in as_completed(futures):
             n += 1
-            success, result = future.result()
+            success, result, reason = future.result()
             if success:
                 data_dict.append(result)
                 print(f'Обработано карточек: {n}')
             else:
-                print(f'Карточка пропущена. Обработано карточек: {n}')
+                reasons[result] = reason
+                print(f'Карточка пропущена ({reason}). Обработано карточек: {n}')
 
     break_line = [line for line in to_fetch if line not in {r['Ссылка'] for r in data_dict}]
 
@@ -191,15 +202,18 @@ def get_data():
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {executor.submit(fetch_card, session, line): line for line in break_line}
             for future in as_completed(futures):
-                success, result = future.result()
+                success, result, reason = future.result()
                 if success:
                     data_dict.append(result)
+                    reasons.pop(result['Ссылка'], None)
                     print(f'[Раунд повтора {round_num}] Восстановлено: {result["Ссылка"]}')
                 else:
+                    reasons[result] = reason
                     still_broken.append(result)
         break_line = still_broken
 
-    print(f'Сломанных ссылок: {len(break_line)}')
+    reason_counts = Counter(reasons.values())
+    print(f'Сломанных ссылок: {len(break_line)} | Причины: {dict(reason_counts)}')
     with open(BASE_DIR / f"data_{cur_data_file}_Modus.json", 'w', encoding="utf-8") as json_file:
         json.dump(data_dict, json_file, indent=4, ensure_ascii=False)
 
