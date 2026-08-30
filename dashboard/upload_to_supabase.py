@@ -23,8 +23,13 @@ from supabase import create_client
 # Загрузка .env
 load_dotenv(Path(__file__).parent / ".env")
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError(
+        "SUPABASE_URL/SUPABASE_KEY пусты — проверь GitHub Secrets "
+        "(Settings -> Secrets and variables -> Actions) или dashboard/.env"
+    )
 
 MERGED_DIR     = Path(__file__).parent.parent / "MERGED_BELARUS"
 PRODUCTS_PATH  = MERGED_DIR / "products.json"
