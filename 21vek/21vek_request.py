@@ -117,7 +117,19 @@ def get_url_tile():
         json.dump(UNP_list, json_file, indent=4, ensure_ascii=False)
 
 
+REQUEST_DELAY = 1.0  # пауза между карточками (секунды) - снижает риск rate-limit
+
+
 def fetch_card(session, line):
+    """Обёртка над _fetch_card: выдерживает паузу между карточками независимо
+    от результата (успех / ошибка запроса / ошибка парсинга)."""
+    try:
+        return _fetch_card(session, line)
+    finally:
+        time.sleep(REQUEST_DELAY)
+
+
+def _fetch_card(session, line):
     """Забирает и парсит одну карточку товара. Возвращает (True, data, None) либо (False, line, reason)."""
     try:
         q = get_with_retry(session, line)
