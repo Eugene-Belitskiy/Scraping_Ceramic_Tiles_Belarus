@@ -98,7 +98,8 @@ pip install -r requirements.txt
 
 ```
 SUPABASE_URL=https://xxx.supabase.co
-SUPABASE_KEY=your-anon-key
+SUPABASE_KEY=your-anon-key            # дашборд (чтение, ограничено RLS)
+SUPABASE_SERVICE_KEY=your-service-role-key   # загрузка данных (запись, обходит RLS)
 ```
 
 ---

@@ -60,9 +60,10 @@ Scraping_Belarus_v2/
 #    Table Editor → products → RLS → New Policy → SELECT for anon
 #    (аналогично для prices)
 
-# 3. Создать файл dashboard/.env с ключами Supabase:
+# 3. Создать файл dashboard/.env с ключами Supabase (Settings → API):
 #    SUPABASE_URL=https://xxx.supabase.co
-#    SUPABASE_KEY=your-anon-key
+#    SUPABASE_KEY=your-anon-key            # для dashboard.py (чтение, ограничено RLS)
+#    SUPABASE_SERVICE_KEY=your-service-role-key   # для upload_to_supabase.py (запись, обходит RLS)
 
 # 4. Собрать первые данные (раскомментировать cur_data_file = "01.2026")
 python MERGED_BELARUS/Main_scraping_Belarus.py

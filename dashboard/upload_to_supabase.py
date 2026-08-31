@@ -8,6 +8,13 @@
 
 ВАЖНО: сначала загружаются products, потом prices (из-за внешнего ключа).
 
+ВАЖНО про ключ: используется SUPABASE_SERVICE_KEY (service_role), а не
+SUPABASE_KEY (anon, тот же, что у дашборда). anon-ключ ограничен RLS-политикой
+"SELECT only" — upsert (INSERT/UPDATE) с ним падает с ошибкой 42501
+"row-level security policy". service_role обходит RLS и предназначен именно
+для доверенных серверных процессов вроде этого скрипта — не для публичного
+дашборда. Взять его: Supabase → Settings → API → Project API keys → "service_role".
+
 Использование:
     python dashboard/upload_to_supabase.py
 """
@@ -24,11 +31,13 @@ from supabase import create_client
 load_dotenv(Path(__file__).parent / ".env")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError(
-        "SUPABASE_URL/SUPABASE_KEY пусты — проверь GitHub Secrets "
-        "(Settings -> Secrets and variables -> Actions) или dashboard/.env"
+        "SUPABASE_URL/SUPABASE_SERVICE_KEY пусты — проверь GitHub Secrets "
+        "(Settings -> Secrets and variables -> Actions) или dashboard/.env. "
+        "SUPABASE_SERVICE_KEY — это service_role-ключ (Supabase -> Settings -> API), "
+        "НЕ тот же anon-ключ, что у дашборда — anon не может писать из-за RLS."
     )
 
 MERGED_DIR     = Path(__file__).parent.parent / "MERGED_BELARUS"

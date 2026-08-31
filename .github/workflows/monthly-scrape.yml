@@ -190,7 +190,9 @@ jobs:
       - name: Upload to Supabase
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # service_role, не anon - anon упирается в RLS (только SELECT), см.
+          # комментарий в dashboard/upload_to_supabase.py
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python dashboard/upload_to_supabase.py
 
       - uses: actions/upload-artifact@v4
