@@ -39,7 +39,9 @@ def get_with_retry(session, url, timeout=30, max_retries=MAX_RETRIES):
             r = session.get(url, timeout=timeout)
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
             last_exc = e
-            time.sleep(min(2 ** attempt, 40) + random.uniform(0, 1))
+            delay = min(2 ** attempt, 40) + random.uniform(0, 1)
+            print(f'[retry {attempt + 1}/{max_retries}] {type(e).__name__} на {url}, жду {delay:.0f}с')
+            time.sleep(delay)
             continue
 
         if r.status_code == 429 or r.status_code >= 500:
@@ -52,7 +54,9 @@ def get_with_retry(session, url, timeout=30, max_retries=MAX_RETRIES):
                 delay = min(float(retry_after), 60) if retry_after else min(2 ** attempt, 40)
             except ValueError:
                 delay = min(2 ** attempt, 40)
-            time.sleep(delay + random.uniform(0, 1))
+            delay += random.uniform(0, 1)
+            print(f'[retry {attempt + 1}/{max_retries}] HTTP {r.status_code} на {url}, жду {delay:.0f}с')
+            time.sleep(delay)
             continue
 
         r.raise_for_status()
