@@ -60,8 +60,9 @@ def get_with_retry(session, url, timeout=30, max_retries=MAX_RETRIES):
 
 
 def get_url_tile():
+    session = make_session()
     url = f'https://www.21vek.by/tile/'
-    q = requests.get(url=url, headers=headers)
+    q = get_with_retry(session, url)
     result = q.content
     soup = BeautifulSoup(result, 'lxml')
     # print(soup)
@@ -73,7 +74,7 @@ def get_url_tile():
     # for i in range(1, 2):
     for i in range(1, pages_counts + 1):
         url = f'https://www.21vek.by/tile/page:{i}/'
-        q = requests.get(url=url, headers=headers)
+        q = get_with_retry(session, url)
         result = q.content
         soup = BeautifulSoup(result, 'lxml')
         # print(soup)
@@ -108,7 +109,7 @@ def get_url_tile():
                 }
             )
         print(f'Обработал {i} из {pages_counts} страниц')
-
+        time.sleep(REQUEST_DELAY)
 
     with open(BASE_DIR / f'url_list_{cur_data_file}_21_vek_Tile.txt', 'a') as file:
         for line in url_list:
