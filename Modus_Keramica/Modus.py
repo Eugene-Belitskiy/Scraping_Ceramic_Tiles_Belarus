@@ -90,7 +90,25 @@ def get_url_tile():
             file.write(f'{line}\n')
 
 
+CARD_RETRY_ATTEMPTS = 3  # попыток на одну карточку прямо на месте, прежде чем сдаться
+CARD_RETRY_PAUSE = 3.0   # пауза между этими попытками (секунды)
+
+
 def fetch_card(session, line):
+    """Обёртка над _fetch_card: несколько попыток на одной карточке с паузой
+    между ними (закрывает случаи мимо get_with_retry - например, парсинг не
+    нашёл нужные блоки на 200-ответе)."""
+    result = None
+    for attempt in range(1, CARD_RETRY_ATTEMPTS + 1):
+        result = _fetch_card(session, line)
+        if result[0]:  # success
+            return result
+        if attempt < CARD_RETRY_ATTEMPTS:
+            time.sleep(CARD_RETRY_PAUSE)
+    return result
+
+
+def _fetch_card(session, line):
     """Забирает и парсит одну карточку товара. Возвращает (True, data, None) либо (False, line, reason)."""
     try:
         q = get_with_retry(session, line)
