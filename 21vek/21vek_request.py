@@ -46,8 +46,15 @@ def get_with_retry(session, url, timeout=30, max_retries=MAX_RETRIES):
             continue
 
         if r.status_code == 429 or r.status_code >= 500:
+            # Retry-After от сервера уважаем, но не безгранично: сайт может
+            # прислать что-то вроде "3600" (час) и 8 попыток растянутся на
+            # полдня. delta-seconds по HTTP-спеке, но иногда это ещё и
+            # HTTP-дата — на нечисловое значение просто откатываемся к бэкоффу.
             retry_after = r.headers.get('Retry-After')
-            delay = float(retry_after) if retry_after else min(2 ** attempt, 40)
+            try:
+                delay = min(float(retry_after), 60) if retry_after else min(2 ** attempt, 40)
+            except ValueError:
+                delay = min(2 ** attempt, 40)
             time.sleep(delay + random.uniform(0, 1))
             continue
 
