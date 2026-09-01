@@ -199,6 +199,14 @@ def _fetch_card(session, line):
         else:
             stocs = "В наличии"
 
+        # Дефолты ставим ДО try: если блок найден, но ни одна из трёх строк
+        # внутри не совпала (например, "Поставщик" на странице просто нет),
+        # for-цикл ничего не бросает и except не срабатывает — без дефолтов
+        # тут country/manufacturer/supplier остаются неприсвоенными и падают
+        # в UnboundLocalError ниже, когда собирается data (реально наблюдалось
+        # в проде: "UnboundLocalError (парсинг, status=200)" - ретраи это не
+        # лечат, ошибка одна и та же на любой попытке).
+        country = manufacturer = supplier = 'Не указано / ошибка'
         Manufacture_Info = None
         try:
             Manufacture_Info = soup.find('div', {'data-testid': 'bottomBlockProducerInfo'}).find_all('p')
@@ -210,7 +218,7 @@ def _fetch_card(session, line):
                 if 'Поставщик' in Manufacture_Info[i].text:
                     supplier = Manufacture_Info[i].text.replace('Поставщик:', '').strip()
         except:
-            country, manufacturer, supplier = 'Не указано / ошибка', 'Не указано / ошибка', 'Не указано / ошибка'
+            pass
 
         left_spec = []
         right_spec = []
@@ -355,6 +363,7 @@ def get_new_data():
                 else:
                     stocs = "В наличии"
 
+                country = manufacturer = supplier = 'Не указано / ошибка'
                 try:
                     Manufacture_Info = soup.find('div', {'data-testid': 'bottomBlockProducerInfo'}).find_all('p')
                     for i in range(len(Manufacture_Info)):
@@ -365,7 +374,7 @@ def get_new_data():
                         if 'Поставщик' in Manufacture_Info[i].text:
                             supplier = Manufacture_Info[i].text.replace('Поставщик:', '').strip()
                 except:
-                    country, manufacturer, supplier = 'Не указано / ошибка', 'Не указано / ошибка', 'Не указано / ошибка'
+                    pass
 
                 left_spec = []
                 right_spec = []
