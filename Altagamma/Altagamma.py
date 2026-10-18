@@ -13,7 +13,11 @@ import undetected_chromedriver as uc
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import NoSuchElementException, ElementNotInteractableException
+from selenium.common.exceptions import (
+    NoSuchElementException, ElementNotInteractableException,
+    InvalidSessionIdException, NoSuchWindowException, TimeoutException,
+)
+from collections import Counter
 
 start_time = time.time()
 cur_data_file = datetime.now().strftime("%m.%Y")
@@ -136,116 +140,208 @@ def get_urls_tile():
             file.write(f'{line}\n')
 
 
-def get_data():
-    driver = create_driver()
+# --- Устойчивость к сбоям браузера и блокировкам -----------------------------
+MAX_CARD_ATTEMPTS = 3       # попыток на одну карточку
+CONSEC_FAIL_LIMIT = 5       # столько пропусков подряд = блокировка/мёртвый браузер
+LONG_PAUSE = 120            # пауза после серии пропусков (секунды)
+DRIVER_RESTART_EVERY = 300  # плановый перезапуск Chrome (утечки памяти в headless)
+SAVE_EVERY = 50             # как часто сохранять результат на диск
+RETRY_ROUNDS = 2            # раунды повтора по пропущенным ссылкам в конце
+ROUND_PAUSE = 60
+PAGE_LOAD_TIMEOUT = 60
+
+
+def is_dead_session(e):
+    """Браузер/сессия упали: дальше driver.get() будет падать на каждой карточке."""
+    if isinstance(e, (InvalidSessionIdException, NoSuchWindowException, TimeoutException)):
+        return True
+    msg = str(e).lower()
+    return any(s in msg for s in (
+        'invalid session id', 'chrome not reachable', 'disconnected',
+        'target window already closed', 'session deleted', 'tab crashed',
+    ))
+
+
+def short_reason(e):
+    text = str(e).strip().splitlines()[0][:140] if str(e).strip() else ''
+    return f'{type(e).__name__}: {text}' if text else type(e).__name__
+
+
+def restart_driver(driver):
+    try:
+        driver.quit()
+    except Exception:
+        pass
+    time.sleep(5)
+    new_driver = create_driver()
+    new_driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+    return new_driver
+
+
+def parse_card(content, line):
+    """Парсит карточку. Бросает ValueError, если вместо товара пришла заглушка/блокировка."""
+    soup = BeautifulSoup(content, 'lxml')
+    cur_data = datetime.now().strftime("%d.%m.%Y")
+    cur_time = datetime.now().strftime("%H:%M")
+
+    title = soup.find("h1", class_="pb__right__title")
+    if title is None:
+        raise ValueError('нет заголовка товара: вероятно блокировка или страница-заглушка')
+    name = title.text.strip()
 
     try:
-        result_path = BASE_DIR / f"data_{cur_data_file}_altagamma.json"
+        collection = soup.find("a", class_="collection-link").text.strip()
+    except:
+        collection = "None"
+
+    try:
+        new_price = soup.find("div", class_="rf-bold").text.strip()
+    except:
+        new_price = "None"
+
+    try:
+        old_price = soup.find('div', class_='pb__price pb__price_big').find("div", class_="old-price").text.strip()
+    except:
+        old_price = new_price
+
+    try:
+        price_units = soup.find("div", class_="measure").text.strip().replace(' ', '')
+    except:
+        price_units = "None"
+
+    try:
+        stocs = " ".join(soup.find("p", class_="status").text.strip().split())
+    except:
+        stocs = "None"
+
+    specs_dict = {}
+    for spec in soup.find_all('li', class_="pb__list__item new-ico-wrap"):
+        t = spec.find("div", class_='pb__list__title')
+        d = spec.find("div", class_='pb__list__desc')
+        if t is None or d is None:
+            continue
+        specs_dict[" ".join(t.text.split())] = " ".join(d.text.split())
+
+    data = {
+        "Полное наименование": name,
+        "Коллекция": collection,
+        "Действующая цена": new_price,
+        "Цена без скидки": old_price,
+        "Единица измерения цены": price_units,
+        "Ссылка": line,
+        "Дата мониторинга": cur_data,
+        "Время мониторинга": cur_time,
+        "Магазин": "Altagamma",
+        "В наличии": stocs
+    }
+    return data | specs_dict
+
+
+def get_data():
+    driver = create_driver()
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+    result_path = BASE_DIR / f"data_{cur_data_file}_altagamma.json"
+    data_dict = []
+    break_line = []
+
+    def save():
+        with open(result_path, 'w', encoding="utf-8") as json_file:
+            json.dump(data_dict, json_file, indent=4, ensure_ascii=False)
+
+    try:
         if result_path.exists():
             with open(result_path, 'r', encoding='utf-8') as f:
                 data_dict = json.load(f)
-            already_done = {r['Ссылка'] for r in data_dict}
-        else:
-            data_dict = []
-            already_done = set()
-        n = 1
-        break_line = []
-        break_line_count = 0
+        already_done = {r['Ссылка'] for r in data_dict}
+
         with open(BASE_DIR / f'url_list_{cur_data_file}_altagamma.txt') as file:
             lines = list(dict.fromkeys(line.strip() for line in file if line.strip()))
 
-            for line in lines:
-                if line in already_done:
+        pending = [line for line in lines if line not in already_done]
+        n = len(lines) - len(pending)
+        reasons = {}
+        fails_in_row = 0
+        since_restart = 0
+        saved_since = 0
+
+        for round_num in range(RETRY_ROUNDS + 1):
+            if round_num:
+                if not pending:
+                    break
+                print(f'[Раунд повтора {round_num}/{RETRY_ROUNDS}] Пауза {ROUND_PAUSE}с, затем {len(pending)} пропущенных ссылок...')
+                time.sleep(ROUND_PAUSE)
+                driver = restart_driver(driver)
+                since_restart = 0
+                fails_in_row = 0
+
+            still_broken = []
+            for line in pending:
+                data, reason = None, None
+                for attempt in range(1, MAX_CARD_ATTEMPTS + 1):
+                    try:
+                        driver.get(url=line)
+                        data = parse_card(driver.page_source, line)
+                        break
+                    except Exception as e:
+                        reason = short_reason(e)
+                        if is_dead_session(e):
+                            print(f'[!] Сбой браузера ({reason}), перезапускаю Chrome')
+                            driver = restart_driver(driver)
+                            since_restart = 0
+                        else:
+                            time.sleep(3 * attempt)
+
+                if round_num == 0:
                     n += 1
-                    continue
-
-                try:
-                    driver.get(url=line)
-                    content = driver.page_source
-                    soup = BeautifulSoup(content, 'lxml')
-                    cur_data = datetime.now().strftime("%d.%m.%Y")
-                    cur_time = datetime.now().strftime("%H:%M")
-
-                    try:
-                        name = soup.find("h1", class_="pb__right__title").text.strip()
-                    except:
-                        name = "None"
-
-                    try:
-                        collection = soup.find("a", class_="collection-link").text.strip()
-                    except:
-                        collection = "None"
-
-                    try:
-                        new_price = soup.find("div", class_="rf-bold").text.strip()
-                    except:
-                        new_price = "None"
-
-                    try:
-                        old_price = soup.find('div', class_ = 'pb__price pb__price_big').find("div", class_="old-price").text.strip()
-                    except:
-                        old_price = new_price
-
-                    try:
-                        price_units = soup.find("div", class_="measure").text.strip().replace(' ', '')
-                    except:
-                        price_units = "None"
-
-                    try:
-                        stocs = " ".join(soup.find("p", class_="status").text.strip().split())
-                    except:
-                        stocs = "None"
-
-                    left_spec = []
-                    right_spec = []
-
-                    specs = soup.find_all('li', class_="pb__list__item new-ico-wrap")
-                    for spec in specs:
-                        spec = " ".join(spec.find("div", class_='pb__list__title').text.strip().split())
-                        left_spec.append(spec)
-
-                    rspecs = soup.find_all('li', class_="pb__list__item new-ico-wrap")
-                    for rspec in rspecs:
-                        rspec = " ".join(rspec.find("div", class_='pb__list__desc').text.strip().split())
-                        right_spec.append(rspec)
-
-                    specs_dict = {left_spec[i].strip(): right_spec[i].strip() for i in range(len(left_spec))}
-                    data = {
-                        "Полное наименование": name,
-                        "Коллекция": collection,
-                        "Действующая цена": new_price,
-                        "Цена без скидки": old_price,
-                        "Единица измерения цены": price_units,
-                        "Ссылка": line,
-                        "Дата мониторинга": cur_data,
-                        "Время мониторинга": cur_time,
-                        "Магазин": "Altagamma",
-                        "В наличии": stocs
-                    }
-
-                    data_dict.append(data | specs_dict)
+                if data is not None:
+                    data_dict.append(data)
+                    reasons.pop(line, None)
+                    fails_in_row = 0
+                    since_restart += 1
+                    saved_since += 1
                     print(f'Обработано карточек: {n}')
-                except:
-                    break_line_count += 1
-                    break_line.append(line)
-                    print(f'Карточка пропущена. Обработано карточек: {n}')
-                n += 1
+                    if saved_since >= SAVE_EVERY:
+                        save()
+                        saved_since = 0
+                else:
+                    reasons[line] = reason
+                    still_broken.append(line)
+                    fails_in_row += 1
+                    print(f'Карточка пропущена ({reason}). Обработано карточек: {n}')
+                    if fails_in_row >= CONSEC_FAIL_LIMIT:
+                        print(f'[!] {fails_in_row} пропусков подряд: пауза {LONG_PAUSE}с и перезапуск Chrome')
+                        time.sleep(LONG_PAUSE)
+                        driver = restart_driver(driver)
+                        since_restart = 0
+                        fails_in_row = 0
 
-            print(f'Сломанных ссылок: {break_line_count}')
+                if since_restart >= DRIVER_RESTART_EVERY:
+                    print('[i] Плановый перезапуск Chrome')
+                    driver = restart_driver(driver)
+                    since_restart = 0
 
-        with open(BASE_DIR / f"data_{cur_data_file}_altagamma.json", 'w', encoding="utf-8") as json_file:
-            json.dump(data_dict, json_file, indent=4, ensure_ascii=False)
+            pending = still_broken
 
-        if break_line_count != 0:
+        break_line = pending
+        print(f'Сломанных ссылок: {len(break_line)} | Причины: {dict(Counter(reasons.values()))}')
+
+        if break_line:
             with open(BASE_DIR / f"urls_break_{cur_data_file}_altagamma.json", 'w', encoding="utf-8") as json_file:
                 json.dump(break_line, json_file, indent=4, ensure_ascii=False)
 
     except Exception as ex:
-        print(ex)
+        print(f'[!] Остановка: {short_reason(ex)}')
 
     finally:
-        driver.close()
-        driver.quit()
+        # сохраняем всё собранное, даже если скрипт прервали или он упал
+        try:
+            save()
+        except Exception as e:
+            print(f'[!] Не удалось сохранить результат: {short_reason(e)}')
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 
 def main():
